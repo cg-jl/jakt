@@ -3128,21 +3128,24 @@ struct CodeGenerator {
         mut output = ""
 
         let expr_type = .program.get_type(expr.type())
-        if expr_type is Enum(enum_id) {
-            output += .codegen_enum_match(
-                enum_: .program.get_enum(enum_id)
-                expr
-                match_cases
-                type_id
-                all_variants_constant
-            )
-        } else {
-            output += .codegen_generic_match(
-                expr
-                cases: match_cases
-                return_type_id: type_id
-                all_variants_constant
-            )
+        match expr_type {
+            Enum(enum_id) | GenericEnumInstance(id: enum_id) => {
+                output += .codegen_enum_match(
+                    enum_: .program.get_enum(enum_id)
+                    expr
+                    match_cases
+                    type_id
+                    all_variants_constant
+                )
+            }
+            else => {
+                output += .codegen_generic_match(
+                    expr
+                    cases: match_cases
+                    return_type_id: type_id
+                    all_variants_constant
+                )
+            }
         }
         .control_flow_state = last_control_flow
         return output
@@ -3151,14 +3154,7 @@ struct CodeGenerator {
     fn codegen_generic_match(mut this, expr: CheckedExpression, cases: [CheckedMatchCase], return_type_id: TypeId, all_variants_constant: bool) throws -> String {
         mut output = ""
 
-        mut is_generic_enum: bool = false
-        for case_ in cases {
-            if case_ is EnumVariant {
-                is_generic_enum = true
-                break
-            }
-        }
-        let match_values_all_constant = all_variants_constant and not is_generic_enum
+        let match_values_all_constant = all_variants_constant
 
         let cpp_match_result_type = .codegen_type(return_type_id)
 
@@ -3169,11 +3165,7 @@ struct CodeGenerator {
             .codegen_function_return_type(function: .current_function!)
         ) + "{\n"
 
-        if is_generic_enum {
-            output += "auto&& __jakt_enum_value = JaktInternal::deref_if_ref_pointer("
-        } else {
-            output += "auto __jakt_enum_value = ("
-        }
+        output += "auto __jakt_enum_value = ("
         output += .codegen_expression(expr)
         output += ");\n"
 
@@ -3342,7 +3334,7 @@ struct CodeGenerator {
                     EnumVariant(name, args, subject_type_id, index, scope_id, body) => {
                         let enum_type = .program.get_type(subject_type_id)
                         let enum_id = match enum_type {
-                            Enum(id) => id
+                            Enum(id) | GenericEnumInstance(id) => id
                             else => {
                                 panic("Expected enum type")
                             }

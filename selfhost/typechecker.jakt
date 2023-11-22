@@ -6509,17 +6509,25 @@ struct Typechecker {
                 expr: CheckedExpression::Match(
                     expr: checked_condition,
                     match_cases: [
-                        CheckedMatchCase::Expression(
-                            defaults: []
-                            expression: CheckedExpression::Boolean(val: true, span)
+                        CheckedMatchCase(
+                            patterns: [
+                                CheckedMatchPattern::Expression(
+                                    defaults: []
+                                    expression: CheckedExpression::Boolean(val: true, span)
+                                    marker_span: span
+                                ),
+                            ]
                             body: CheckedMatchBody::Expression(CheckedExpression::Block(block: checked_block, span, type_id: checked_block.yielded_type!))
-                            marker_span: span
-                        ),
-                        CheckedMatchCase::CatchAll(
-                            defaults: []
-                            has_arguments: false
+                        )
+                        CheckedMatchCase(
+                            patterns: [
+                                CheckedMatchPattern::CatchAll(
+                                    defaults: []
+                                    has_arguments: false
+                                    marker_span: span
+                                )
+                            ]
                             body: CheckedMatchBody::Block(checked_else_block)
-                            marker_span: span
                         )
                     ]
                     span
@@ -9194,7 +9202,7 @@ struct Typechecker {
         arguments_span: Span
         scope_id: ScopeId
         safety_mode: SafetyMode
-    ) throws -> (String?, CheckedMatchCase, TypeId?) {
+    ) throws -> (String?, CheckedMatchPattern, CheckedMatchBody, TypeId?) {
         mut covered_name: String? = None
 
         let new_scope_id = .create_scope(
@@ -9330,18 +9338,17 @@ struct Typechecker {
             span: case_.marker_span
         )
 
-        let checked_match_case = CheckedMatchCase::EnumVariant(
+        let checked_match_pat = CheckedMatchPattern::EnumVariant(
             defaults
             name: variant.name()
             args: variant_arguments
             subject_type_id
             index: variant_index
             scope_id: new_scope_id
-            body: checked_body
             marker_span: case_.marker_span
         )
 
-        return (covered_name, checked_match_case, result_type)
+        return (covered_name, checked_match_pat, checked_body, result_type)
     }
 
     fn typecheck_match(
@@ -9379,6 +9386,8 @@ struct Typechecker {
             }
         }
 
+        checked_cases.ensure_capacity(cases.size())
+
         match type_to_match_on {
             Enum(enum_id) | GenericEnumInstance(id: enum_id) => {
                 let enum_ = .get_enum(enum_id)
@@ -9390,6 +9399,14 @@ struct Typechecker {
                 let case_count = cases.size()
                 mut current_case_index = 0uz
                 for case_ in cases {
+                    // NOTE: This can only be `None` for the first loop, since
+                    // a case should have at least one pattern. We currently
+                    // duplicate work since we typecheck the body for each
+                    // pattern that is contained in the cases, although we'll
+                    // only use the last checked body.
+                    mut last_checked_body: CheckedMatchBody? = None
+                    mut checked_patterns: [CheckedMatchPattern] = []
+                    checked_patterns.ensure_capacity(case_.patterns.size())
                     for pattern in case_.patterns {
                         match pattern {
                             EnumVariant(variant_names, variant_arguments, arguments_span) => {
@@ -9429,7 +9446,7 @@ struct Typechecker {
                                     return CheckedExpression::Match(expr: checked_expr, match_cases: [], span, type_id: unknown_type_id(), all_variants_constant: false)
                                 }
 
-                                let (covered_name, checked_match_case, result_type) = .typecheck_match_variant(
+                                let (covered_name, checked_match_pat, checked_body, result_type) = .typecheck_match_variant(
                                     case_
                                     subject_type_id
                                     variant_index: variant_index!
@@ -9447,7 +9464,9 @@ struct Typechecker {
 
                                 final_result_type = result_type
 
-                                checked_cases.push(checked_match_case)
+                                last_checked_body = checked_body
+
+                                checked_patterns.push(checked_match_pat)
                             }
                             CatchAll(variant_arguments, arguments_span) => {
                                 if current_case_index != case_count - 1 {
@@ -9466,7 +9485,7 @@ struct Typechecker {
                                         if not covered_variants.contains(variant.name()) {
                                             expanded_catch_all = true
 
-                                            let (covered_name, checked_match_case, result_type) = .typecheck_match_variant(
+                                            let (covered_name, checked_match_pat, checked_body, result_type) = .typecheck_match_variant(
                                                 case_
                                                 subject_type_id
                                                 variant_index
@@ -9482,9 +9501,11 @@ struct Typechecker {
                                                 covered_variants.add(covered_name!)
                                             }
 
-                                            final_result_type = result_type
 
-                                            checked_cases.push(checked_match_case)
+                                            final_result_type = result_type
+                                            last_checked_body = checked_body
+
+                                            checked_patterns.push(checked_match_pat)
                                         }
 
                                         variant_index++
@@ -9515,21 +9536,26 @@ struct Typechecker {
                                         final_result_type
                                         span: case_.marker_span
                                     )
+                                    last_checked_body = checked_body
                                     final_result_type = result_type
 
-                                    let checked_match_case = CheckedMatchCase::CatchAll(
+                                    let checked_match_pat = CheckedMatchPattern::CatchAll(
                                         defaults
                                         has_arguments: false
-                                        body: checked_body
                                         marker_span: case_.marker_span
                                     )
 
-                                    checked_cases.push(checked_match_case)
+                                    checked_patterns.push(checked_match_pat)
                                 }
                             }
                             else => {}
                         }
                     }
+
+                    checked_cases.push(CheckedMatchCase(
+                        patterns: checked_patterns
+                        body: last_checked_body.value()
+                    ))
 
                     current_case_index++
                 }
@@ -9571,7 +9597,11 @@ struct Typechecker {
                     mut catch_all_marker_span: Span? = None
                     mut covered_cases: {StructId} = {}
 
+
                     for case_ in cases {
+                        mut last_checked_body: CheckedMatchBody? = None
+                        mut checked_patterns: [CheckedMatchPattern] = []
+                        checked_patterns.ensure_capacity(case_.patterns.size())
                         for pattern in case_.patterns {
                             match pattern {
                                 EnumVariant(variant_names, variant_arguments, arguments_span) => {
@@ -9731,12 +9761,12 @@ struct Typechecker {
                                         final_result_type
                                         span: case_.marker_span
                                     )
+                                    last_checked_body = checked_body
                                     final_result_type = result_type
 
-                                    checked_cases.push(CheckedMatchCase::ClassInstance(
+                                    checked_patterns.push(CheckedMatchPattern::ClassInstance(
                                         defaults: []
                                         type
-                                        body: checked_body
                                         rebind_name
                                         marker_span: case_.marker_span
                                     ))
@@ -9769,12 +9799,12 @@ struct Typechecker {
                                             final_result_type
                                             span: case_.marker_span
                                         )
+                                        last_checked_body = checked_body
                                         final_result_type = result_type
 
-                                        checked_cases.push(CheckedMatchCase::CatchAll(
+                                        checked_patterns.push(CheckedMatchPattern::CatchAll(
                                             defaults: []
                                             has_arguments: false
-                                            body: checked_body
                                             marker_span: case_.marker_span
                                         ))
                                     }
@@ -9787,6 +9817,10 @@ struct Typechecker {
                                 }
                             }
                         }
+                        checked_cases.push(CheckedMatchCase(
+                            patterns: checked_patterns
+                            body: last_checked_body.value()
+                        ))
                     }
 
                     if not seen_catch_all {
@@ -9830,6 +9864,9 @@ struct Typechecker {
                     let case_count = cases.size()
                     mut current_case_index = 0uz
                     for case_ in cases {
+                        mut last_checked_body: CheckedMatchBody? = None
+                        mut checked_patterns: [CheckedMatchPattern] = []
+                        checked_patterns.ensure_capacity(case_.patterns.size())
                         for pattern in case_.patterns {
                             match pattern {
                                 EnumVariant(variant_names, variant_arguments, arguments_span) => {
@@ -9869,19 +9906,19 @@ struct Typechecker {
                                         final_result_type
                                         span: case_.marker_span
                                     )
+                                    last_checked_body = checked_body
                                     final_result_type = result_type
 
-                                    let checked_match_case = CheckedMatchCase::EnumVariant(
+                                    let checked_match_pat = CheckedMatchPattern::EnumVariant(
                                         defaults
                                         name: variant_names.last()!.0
                                         args: variant_arguments
                                         subject_type_id
                                         index: 0
                                         scope_id: new_scope_id
-                                        body: checked_body
                                         marker_span: case_.marker_span
                                     )
-                                    checked_cases.push(checked_match_case)
+                                    checked_patterns.push(checked_match_pat)
                                 }
                                 CatchAll(variant_arguments) => {
                                     if current_case_index != case_count - 1 {
@@ -9925,16 +9962,16 @@ struct Typechecker {
                                         final_result_type
                                         span: case_.marker_span
                                     )
+                                    last_checked_body = checked_body
                                     final_result_type = result_type
 
-                                    let checked_match_case = CheckedMatchCase::CatchAll(
+                                    let checked_match_pattern = CheckedMatchPattern::CatchAll(
                                         defaults
                                         has_arguments: variant_arguments.size() != 0
-                                        body: checked_body
                                         marker_span: case_.marker_span
                                     )
 
-                                    checked_cases.push(checked_match_case)
+                                    checked_patterns.push(checked_match_pattern)
                                 }
                                 Expression(expr) => {
                                     if is_enum_match {
@@ -10006,19 +10043,24 @@ struct Typechecker {
                                         final_result_type
                                         span: case_.marker_span
                                     )
+                                    last_checked_body = checked_body
                                     final_result_type = result_type
 
-                                    let checked_match_case = CheckedMatchCase::Expression(
+                                    let checked_match_pat = CheckedMatchPattern::Expression(
                                         defaults: []
                                         expression: checked_expression
-                                        body: checked_body
                                         marker_span: case_.marker_span
                                     )
-                                    checked_cases.push(checked_match_case)
+                                    checked_patterns.push(checked_match_pat)
                                 }
                                 else => {}
                             }
                         }
+
+                        checked_cases.push(CheckedMatchCase(
+                            patterns: checked_patterns
+                            body: last_checked_body.value()
+                        ))
 
                         current_case_index++
                     }

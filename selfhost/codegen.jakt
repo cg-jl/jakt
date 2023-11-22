@@ -3172,124 +3172,126 @@ struct CodeGenerator {
         mut has_default = false
         mut first = true
         for case_ in cases {
-            let defaults = case_.defaults
+            for pattern in case_.patterns {
+                let defaults = pattern.defaults
 
-            match case_ {
-                EnumVariant(name, args, subject_type_id, scope_id, body) => {
-                    let enum_ = .program.get_enum(match .program.get_type(subject_type_id) {
-                        Enum(enum_id) => enum_id
-                        GenericEnumInstance(id) => id
-                        else => {
-                            panic(format("Unexpected type in IsEnumVariant: {}", .program.get_type(subject_type_id)))
-                        }
-                    })
-                    // FIXME: This should be a call to find(), but we do not yet provide the needed operator== for that
-                    mut variant_index = 0;
-                    for variant in enum_.variants {
-                        if variant.name() == name {
-                            break
-                        }
-                        variant_index++
-                    }
-
-                    output += format("if (__jakt_enum_value.__jakt_init_index() == {} /* {} */) {{\n", variant_index, name)
-
-                    mut variant_type_name = ""
-                    let qualifier = .codegen_type_possibly_as_namespace(type_id: subject_type_id, as_namespace: true)
-                    if not qualifier.is_empty() {
-                        variant_type_name += "typename JaktInternal::RemoveRefPtr<"
-                        variant_type_name += qualifier
-                        variant_type_name += ">::"
-                    }
-                    variant_type_name += name
-
-                    if not args.is_empty() {
-                        output += "auto& __jakt_match_value = __jakt_enum_value.as."
-                        output += enum_.variants[variant_index].name()
-                        output += ";\n"
-
-                        for arg in args {
-                            output += "auto& "
-                            output += arg.binding
-                            output += " = __jakt_match_value."
-                            output += arg.name ?? "value"
-                            output += ";\n"
-                        }
-                    }
-
-                    for default_ in defaults {
-                        output += .codegen_statement(statement: default_)
-                    }
-
-                    output += .codegen_match_body(body, return_type_id)
-                    output += "}\n"
-                }
-                CatchAll(has_arguments, body, marker_span) => {
-                    if has_arguments {
-                        panic("Bindings should not be present in a generic else")
-                    }
-
-                    // TODO: Use default statement if all values are constant
-                    has_default = true
-
-                    if first {
-                        output += "{"
-                    } else {
-                        output += "else {\n"
-                    }
-
-                    for default_ in defaults {
-                        output += .codegen_statement(statement: default_)
-                    }
-
-                    output += .codegen_match_body(body, return_type_id)
-                    output += "}\n"
-                }
-                Expression(expression, body, marker_span) => {
-                    // TODO: Use case statement if all values are constant
-                    if not first {
-                        output += "else "
-                    }
-                    if expression is Range(from, to) {
-                        output += "if (__jakt_enum_value"
-                        if from.has_value() {
-                            output += " >= "
-                            output += .codegen_expression(from!)
-                        }
-
-                        if to.has_value() {
-                            if from.has_value() {
-                                output += "&& __jakt_enum_value "
+                match pattern {
+                    EnumVariant(name, args, subject_type_id, scope_id) => {
+                        let enum_ = .program.get_enum(match .program.get_type(subject_type_id) {
+                            Enum(enum_id) => enum_id
+                            GenericEnumInstance(id) => id
+                            else => {
+                                panic(format("Unexpected type in IsEnumVariant: {}", .program.get_type(subject_type_id)))
                             }
-                            output += "< "
-                            output += .codegen_expression(to!)
+                        })
+                        // FIXME: This should be a call to find(), but we do not yet provide the needed operator== for that
+                        mut variant_index = 0;
+                        for variant in enum_.variants {
+                            if variant.name() == name {
+                                break
+                            }
+                            variant_index++
                         }
-                    } else {
-                        output += "if (__jakt_enum_value == "
-                        output += .codegen_expression(expression)
-                    }
-                    output += ") {\n"
-                    output += .codegen_match_body(body, return_type_id)
-                    output += "}\n"
-                }
-                ClassInstance(type, body, rebind_name, marker_span) => {
-                    let type_name = .codegen_type_possibly_as_namespace(type_id: type, as_namespace: true)
-                    output += format("if (is<{}>(__jakt_enum_value.ptr())) {{\n", type_name)
-                    output += format(
-                        "auto {} = NonnullRefPtr {{ *static_cast<RawPtr<{}>>(__jakt_enum_value.ptr()) }};\n"
-                        (rebind_name?.name ?? "__jakt_match_value")
-                        type_name
-                    )
 
-                    for default_ in defaults {
-                        output += .codegen_statement(statement: default_)
-                    }
+                        output += format("if (__jakt_enum_value.__jakt_init_index() == {} /* {} */) {{\n", variant_index, name)
 
-                    output += .codegen_match_body(body, return_type_id)
-                    output += "}\n"
+                        mut variant_type_name = ""
+                        let qualifier = .codegen_type_possibly_as_namespace(type_id: subject_type_id, as_namespace: true)
+                        if not qualifier.is_empty() {
+                            variant_type_name += "typename JaktInternal::RemoveRefPtr<"
+                            variant_type_name += qualifier
+                            variant_type_name += ">::"
+                        }
+                        variant_type_name += name
+
+                        if not args.is_empty() {
+                            output += "auto& __jakt_match_value = __jakt_enum_value.as."
+                            output += enum_.variants[variant_index].name()
+                            output += ";\n"
+
+                            for arg in args {
+                                output += "auto& "
+                                output += arg.binding
+                                output += " = __jakt_match_value."
+                                output += arg.name ?? "value"
+                                output += ";\n"
+                            }
+                        }
+
+                        for default_ in defaults {
+                            output += .codegen_statement(statement: default_)
+                        }
+
+                        output += .codegen_match_body(body: case_.body, return_type_id)
+                        output += "}\n"
+                    }
+                    CatchAll(has_arguments, marker_span) => {
+                            if has_arguments {
+                                panic("Bindings should not be present in a generic else")
+                            }
+
+                            // TODO: Use default statement if all values are constant
+                            has_default = true
+
+                            if first {
+                                output += "{"
+                            } else {
+                                output += "else {\n"
+                            }
+
+                            for default_ in defaults {
+                                output += .codegen_statement(statement: default_)
+                            }
+
+                            output += .codegen_match_body(body: case_.body, return_type_id)
+                            output += "}\n"
+                    }
+                    Expression(expression, marker_span) => {
+                        // TODO: Use case statement if all values are constant
+                        if not first {
+                            output += "else "
+                        }
+                        if expression is Range(from, to) {
+                            output += "if (__jakt_enum_value"
+                            if from.has_value() {
+                                output += " >= "
+                                output += .codegen_expression(from!)
+                            }
+
+                            if to.has_value() {
+                                if from.has_value() {
+                                    output += "&& __jakt_enum_value "
+                                }
+                                output += "< "
+                                output += .codegen_expression(to!)
+                            }
+                        } else {
+                            output += "if (__jakt_enum_value == "
+                            output += .codegen_expression(expression)
+                        }
+                        output += ") {\n"
+                        output += .codegen_match_body(body: case_.body, return_type_id)
+                        output += "}\n"
+                    }
+                    ClassInstance(type, rebind_name, marker_span) => {
+                        let type_name = .codegen_type_possibly_as_namespace(type_id: type, as_namespace: true)
+                        output += format("if (is<{}>(__jakt_enum_value.ptr())) {{\n", type_name)
+                        output += format(
+                            "auto {} = NonnullRefPtr {{ *static_cast<RawPtr<{}>>(__jakt_enum_value.ptr()) }};\n"
+                            (rebind_name?.name ?? "__jakt_match_value")
+                            type_name
+                        )
+
+                        for default_ in defaults {
+                            output += .codegen_statement(statement: default_)
+                        }
+
+                        output += .codegen_match_body(body: case_.body, return_type_id)
+                        output += "}\n"
+                    }
                 }
+                first = false
             }
-            first = false
         }
         if return_type_id == void_type_id() or return_type_id == unknown_type_id() {
             output += "return JaktInternal::ExplicitValue<void>();\n"
@@ -3328,48 +3330,35 @@ struct CodeGenerator {
             output += .codegen_expression(expr) + ";\n"
             output += "switch(__jakt_match_variant.__jakt_init_index()) {\n"
 
+            mut total_patterns: usize = 0
+
             mut has_default = false
             for match_case in match_cases {
-                match match_case {
-                    EnumVariant(name, args, subject_type_id, index, scope_id, body) => {
-                        let enum_type = .program.get_type(subject_type_id)
-                        let enum_id = match enum_type {
-                            Enum(id) | GenericEnumInstance(id) => id
-                            else => {
-                                panic("Expected enum type")
-                            }
-                        }
-                        let match_case_enum = .program.get_enum(enum_id)
-                        let variant = match_case_enum.variants[index]
-                        output += format("case {} /* {} */: ", index, variant.name()) + "{\n"
-                        match variant {
-                            Untyped(name) => {
-                            }
-                            Typed(name, type_id) => {
-                                if not args.is_empty() {
-                                    output += format(
-                                        "auto&& __jakt_match_value = __jakt_match_variant.as.{};",
-                                        name
-                                    )
-
-                                    let arg = args[0]
-                                    let var = .program.find_var_in_scope(scope_id, var: arg.binding)!
-                                    output += .codegen_type(var.type_id)
-                                    if not var.is_mutable {
-                                        output += " const"
-                                    }
-                                    output += "& "
-                                    output += arg.binding
-                                    output += " = __jakt_match_value.value;\n"
+                total_patterns += match_case.patterns.size()
+                for pattern in match_case.patterns {
+                    match pattern {
+                        EnumVariant(name, args, subject_type_id, index, scope_id) => {
+                            let enum_type = .program.get_type(subject_type_id)
+                            let enum_id = match enum_type {
+                                Enum(id) | GenericEnumInstance(id) => id
+                                else => {
+                                    panic("Expected enum type")
                                 }
                             }
-                            StructLike(name, fields) => {
-                                if not args.is_empty() {
-                                    output += format(
-                                        "auto&& __jakt_match_value = __jakt_match_variant.as.{};",
-                                        name)
+                            let match_case_enum = .program.get_enum(enum_id)
+                            let variant = match_case_enum.variants[index]
+                            output += format("case {} /* {} */: ", index, variant.name()) + "{\n"
+                            match variant {
+                                Untyped(name) => {
+                                }
+                                Typed(name, type_id) => {
+                                    if not args.is_empty() {
+                                        output += format(
+                                            "auto&& __jakt_match_value = __jakt_match_variant.as.{};",
+                                            name
+                                        )
 
-                                    for arg in args {
+                                        let arg = args[0]
                                         let var = .program.find_var_in_scope(scope_id, var: arg.binding)!
                                         output += .codegen_type(var.type_id)
                                         if not var.is_mutable {
@@ -3377,42 +3366,60 @@ struct CodeGenerator {
                                         }
                                         output += "& "
                                         output += arg.binding
-                                        output += " = __jakt_match_value."
-                                        output += arg.name.value_or(arg.binding)
-                                        output += ";\n"
+                                        output += " = __jakt_match_value.value;\n"
                                     }
                                 }
+                                StructLike(name, fields) => {
+                                    if not args.is_empty() {
+                                        output += format(
+                                            "auto&& __jakt_match_value = __jakt_match_variant.as.{};",
+                                            name)
+
+                                        for arg in args {
+                                            let var = .program.find_var_in_scope(scope_id, var: arg.binding)!
+                                            output += .codegen_type(var.type_id)
+                                            if not var.is_mutable {
+                                                output += " const"
+                                            }
+                                            output += "& "
+                                            output += arg.binding
+                                            output += " = __jakt_match_value."
+                                            output += arg.name.value_or(arg.binding)
+                                            output += ";\n"
+                                        }
+                                    }
+                                }
+                                else => {
+                                    todo(format("codegen_enum_match match variant else: {}", variant))
+                                }
                             }
-                            else => {
-                                todo(format("codegen_enum_match match variant else: {}", variant))
+
+                            for default_ in pattern.defaults {
+                                output += .codegen_statement(statement: default_)
                             }
+
+                            output += .codegen_match_body(body: match_case.body, return_type_id: type_id)
+                            output += "};/*case end*/\n"
                         }
+                        CatchAll => {
+                            has_default = true
 
-                        for default_ in match_case.defaults {
-                            output += .codegen_statement(statement: default_)
+                            output += "default: {\n"
+                            for default_ in pattern.defaults {
+                                output += .codegen_statement(statement: default_)
+                            }
+
+                            output += .codegen_match_body(body: match_case.body, return_type_id: type_id)
+                            output += "};/*case end*/\n"
                         }
-
-                        output += .codegen_match_body(body, return_type_id: type_id)
-                        output += "};/*case end*/\n"
-                    }
-                    CatchAll(body) => {
-                        has_default = true
-
-                        output += "default: {\n"
-                        for default_ in match_case.defaults {
-                            output += .codegen_statement(statement: default_)
+                        else => {
+                            panic("Matching enum subject with non-enum value")
                         }
-
-                        output += .codegen_match_body(body, return_type_id: type_id)
-                        output += "};/*case end*/\n"
-                    }
-                    else => {
-                        panic("Matching enum subject with non-enum value")
                     }
                 }
             }
             if not has_default {
-                if enum_.variants.size() != match_cases.size() {
+                if enum_.variants.size() != total_patterns {
                     panic("Inexhaustive match statement")
                 }
                 output += "default: VERIFY_NOT_REACHED();"
@@ -3428,19 +3435,21 @@ struct CodeGenerator {
             output += "switch (" + .codegen_expression(expr) + ") {\n"
 
             for match_case in match_cases {
-                match match_case {
-                    EnumVariant(name, body) => {
-                        output += "case " + enum_.name + "::" + name + ": {\n"
-                        output += .codegen_match_body(body, return_type_id: type_id)
-                        output += "}\n"
-                    }
-                    CatchAll(body) => {
-                        output += "default: {\n"
-                        output += .codegen_match_body(body, return_type_id: type_id)
-                        output += "}\n"
-                    }
-                    else => {
-                        todo(format("underlying type enum match, match_case: {}", match_case))
+                for pattern in match_case.patterns {
+                    match pattern {
+                        EnumVariant(name) => {
+                            output += "case " + enum_.name + "::" + name + ": {\n"
+                            output += .codegen_match_body(body: match_case.body, return_type_id: type_id)
+                            output += "}\n"
+                        }
+                        CatchAll => {
+                            output += "default: {\n"
+                            output += .codegen_match_body(body: match_case.body, return_type_id: type_id)
+                            output += "}\n"
+                        }
+                        else => {
+                            todo(format("underlying type enum match, match_case: {}", match_case))
+                        }
                     }
                 }
             }

@@ -6,7 +6,5 @@ if has("nvim")
       return
     end
     let s:started = 1
-    lua require('lsp').start()
   endfunction
-  au FileType jakt call s:Start()
 end

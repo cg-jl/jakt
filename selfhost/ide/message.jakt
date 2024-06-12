@@ -1,0 +1,113 @@
+import utility { panic }
+
+namespace jsonrpc {
+
+
+    // `msgdump` must encode the message into a series of UTF-8 JSON encoded key:value pairs, as if it were
+    // an object, but without closing said object. `send_message` already adds the mandatory "jsonrpc":"2.0" key-value pair, opens
+    // and closes the object, and sends it to standard output.
+    fn send_message(anon msgdump: fn(out: &mut StringBuilder) -> void) {
+        mut sb = StringBuilder::create()
+        sb.append(b'{')
+
+        dump_string("jsonrpc", out: &mut sb)
+        sb.append(b':')
+        dump_string("2.0", out: &mut sb)
+
+        msgdump(out: &mut sb)
+
+        sb.append(b'}')
+
+        let contents = sb.to_string()
+
+        print("Content-Length: {}\r\n\r\n{}", contents.length(), contents)
+    }
+
+    // NOTE: This should be replaced by StringBuilder::append_escaped_for_json when it correctly dumps all UTF-8 into UTF-8 encoded JSON
+    // Encodes a StringView into UTF-8 JSON, following
+    // RFC7158 section 7: https://www.rfc-editor.org/rfc/rfc7158.txt
+    fn dump_string(anon s: String, out: &mut StringBuilder) {
+        out.append('"')
+        for cp in s.code_points() {
+            // escape codepoint if required
+            match cp {
+                '"' => {
+                    out.append(b'\\')
+                    out.append(b'"')
+                }
+                // special recognizable escapes
+                '\\' => {
+                    out.append(b'\\')
+                    out.append(b'\\')
+                }
+                '\r' => {
+                    out.append(b'\\')
+                    out.append(b'r')
+                }
+                '\t' => {
+                    out.append(b'\\')
+                    out.append(b't')
+                }
+                '\n' => {
+                    out.append(b'\\')
+                    out.append(b'n')
+                }
+                // must be escaped using a single \u
+                0u32..0x0020u32 | 0x80u32..0x10000u32 => {
+                    out.append(b'\\')
+                    out.append(b'u')
+                    encode_utf16_json(out, cp as! u16)
+                }
+
+                // single byte characters
+                0x20u32..0x80u32 => {
+                    out.append(cp as! u8)
+                }
+
+                // surrogate pairs
+                0x010000u32..0x110000u32 => {
+                    // To encode each hex UTF-16, following
+                    // RFC2781 section 2.1: https://datatracker.ietf.org/doc/html/rfc2781.html
+                    // uprime can be represented in 20 bits.
+                    let uprime = cp - 0x10000u32
+
+                    // 4 * 2 + 2 = 10 bits free.
+                    // The "third" 0 from 0x8(0b1000) is needed to distinguish between first and second pair (8/C)
+                    mut w1 = 0xD800u16
+                    mut w2 = 0xDC00u16
+
+                    // 10 high order bits of U' to 10 low-order bits of w1
+                    w1 |= (uprime >> 10) as! u16
+                    // 10 low order bits of U' to 10 low-order bits of w2
+                    w2 |= (uprime & 0x3FF) as! u16
+
+                    encode_utf16_json(out, w1)
+                    encode_utf16_json(out, w2)
+                }
+                else => {
+                    panic("Cannot encode code point to JSON: out of spec range")
+                }
+            }
+        }
+        // ending quote.
+        out.append('"')
+    }
+
+    fn encode_utf16_json(out: &mut StringBuilder, anon cp: u16) {
+        encode_nibble(out, cp >> (4*3))
+        encode_nibble(out, cp >> (4*2))
+        encode_nibble(out, cp >> (4*1))
+        encode_nibble(out, cp >> (4*0))
+    }
+
+    fn encode_nibble(out: &mut StringBuilder, anon nibble: u16) {
+        let value = (nibble & 0xf) as! u8
+        if value >= 10 {
+            out.append(b'a' + (value - 10))
+        } else {
+            out.append(b'0' + value)
+        }
+    }
+
+}
+

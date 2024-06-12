@@ -1,0 +1,332 @@
+import utility { is_whitespace, is_ascii_digit, is_ascii_hexdigit, panic }
+import extern "AK/Math.h" {
+    namespace AK {
+        extern fn pow<T>(anon a: T, anon b: T) -> T
+    }
+}
+
+namespace jsonrpc {
+    enum Value {
+        Str(String), // NOTE: JSON strings here are not converted, only checked
+        Arr([Value]),
+        Obj([String:Value]),
+        // jsonrpc distinguishes between integer and decimal
+        Num(Number),
+        True,
+        False,
+        Null
+    }
+
+    enum Number {
+        Integer(i64),
+        Decimal(f64)
+    }
+
+    // parses a JSON object, expecting the source to have the full object in it
+    fn parse(source: &[u8]) throws -> Value {
+        mut index = 0uz
+        return parse_with_position(&mut index, source)
+    }
+
+    // yields (fraction, exponent) if there is one
+    fn parse_fraction(index: &mut usize, source: &[u8]) -> (f64?, i64?) {
+        mut maybe_fraction: f64? = None
+
+        if index < source.size() and source[index] == b'.' {
+            index++
+            let start_index = *index
+            mut fraction = 0f64
+            while index < source.size() and is_ascii_digit(source[index]) {
+                fraction *= 10f64
+                fraction += (source[index] - b'0') as! f64
+                index++
+            }
+            for i in start_index..(*index) {
+                fraction /= 10f64
+            }
+            maybe_fraction = fraction
+        }
+
+        mut maybe_exponent: i64? = None
+
+        if index < source.size() and (source[index] == b'e' or source[index] == b'E') {
+            index++
+            mut exponent: i64 = 1
+            if index < source.size() and source[index] == b'-' {
+                index++
+                exponent = -1
+            } else if index < source.size() and source[index] == b'+' {
+                index++
+                exponent = 1
+            }
+            while index < source.size() and is_ascii_digit(source[index]) {
+                exponent *= 10
+                exponent += (source[index] - b'0') as! i64
+            }
+            maybe_exponent = exponent
+        }
+
+        return (maybe_fraction, maybe_exponent)
+    }
+
+    fn parse_number_known_integer(index: &mut usize, source: &[u8], int_part: i64) -> Number {
+        let (maybe_fraction, maybe_exponent) = parse_fraction(index, source)
+
+        if maybe_fraction is None and maybe_exponent is None {
+            return Number::Integer(int_part)
+        }
+
+        mut val = int_part as! f64
+
+        if maybe_fraction is Some(frac) {
+            val += frac
+        }
+
+        if maybe_exponent is Some(exp) {
+            val *= AK::pow<f64>(10f64, exp as! f64)
+        }
+
+
+        return Number::Decimal(val)
+
+    }
+
+    fn parse_number_nonzero(index: &mut usize, source: &[u8]) -> i64 {
+        mut val = source[index] as! i64
+        index++
+        while index < source.size() and is_ascii_digit(source[index]) {
+            val *= 10
+            val += (source[index] - b'0') as! i64
+            index++
+        }
+        return val
+    }
+
+
+    fn whitespace(index: &mut usize, source: &[u8]) {
+        while index < source.size() {
+            match source[index] {
+                b' ' | b'\n' | b'\r' | b'\t' => {
+                    index++
+                    continue
+                }
+                else => { break }
+            }
+        }
+
+    }
+
+
+
+    // Parses one value from the source, keeping track of the position
+    fn parse_with_position(index: &mut usize, source: &[u8]) throws -> Value {
+        loop {
+            guard index < source.size() else {
+                throw Error::from_string_literal("unexpected EOF")
+            }
+
+            match source[index] {
+                b' ' | b'\n' | b'\r' | b'\t' => {
+                    index++
+                    continue
+                }
+                b'f' => {
+                    if index + 4 < source.size() and
+                        source[index + 1] == b'a' and
+                        source[index + 2] == b'l' and
+                        source[index + 3] == b's' and
+                        source[index + 4] == b'e' {
+
+                        index += 5
+                        return Value::False
+                    }
+                }
+                b't' => {
+                    if index + 3 < source.size() and
+                        source[index + 1] == b'r' and
+                        source[index + 2] == b'u' and
+                        source[index + 3] == b'e' {
+                        
+                        index += 4
+                        return Value::True
+                    }
+                }
+                b'n' => {
+                    if index + 3 < source.size() and
+                        source[index + 1] == b'u' and
+                        source[index + 2] == b'l' and
+                        source[index + 3] == b'l' {
+                        
+                        index += 4
+                        return Value::Null
+                    }
+                }
+                b'-' => {
+                    index++
+                    guard index < source.size() else {
+                        throw Error::from_string_literal("unexpected EOF on number")
+                    }
+                    let int_part = match source[index] {
+                        b'0' => 0i64,
+                        b'1'..(b'9' + 1) => parse_number_nonzero(index, source),
+                        else => {
+                            throw Error::from_string_literal("number has only negative sign")
+                        }
+                    }
+                    return Value::Num(match parse_number_known_integer(index, source, int_part) {
+                        Integer(i) => Number::Integer(-i),
+                        Decimal(d) => Number::Decimal(-d),
+                    })
+                }
+                b'0' => {
+                    index++
+                    return Value::Num(parse_number_known_integer(index, source, int_part: 0))
+                }
+                b'1'..(b'9' + 1) => {
+                    index++
+                    let int_part = parse_number_nonzero(index, source)
+                    return Value::Num(parse_number_known_integer(index, source, int_part))
+                }
+                b'"' => {
+                    index++
+                    mut sb = StringBuilder::create()
+                    loop {
+                        guard index < source.size() else {
+                            throw Error::from_string_literal("unexpected EOF on string literal")
+                        }
+
+                        match source[index] {
+                            b'"' => {
+                                break
+                            }
+                            b'\\' => {
+                                sb.append(b'\\')
+                                index++
+                                guard index < source.size() else {
+                                    throw Error::from_string_literal("unexpected EOF on string literal escape code")
+                                }
+                                match source[index] {
+                                    b'u' => {
+                                        sb.append('u')
+                                        guard index + 4 <= source.size() else {
+                                            throw Error::from_string_literal("unexpected EOF on string literal '\\u'")
+                                        }
+                                        for i in 0uz..4uz {
+                                            guard is_ascii_hexdigit(source[index + i]) else {
+                                                throw Error::from_string_literal("invalid '\\u' escape code")
+                                            }
+                                            sb.append(source[index + i])
+                                        }
+                                        index += 4
+                                    }
+                                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                                        sb.append(source[index])
+                                        index++
+                                    }
+                                    else => {
+                                        throw Error::from_string_literal("invalid escape code")
+                                    }
+                                }
+                            }
+                            else => {
+                                sb.append(source[index])
+                                index++
+                            }
+                        }
+                    }
+                    // NOTE: the string is unicode valid, even if its interepretation (surrogate pairs)
+                    // may not be. We don't bother with the interpretation here, it's unlikely that we need it.
+                    return Value::Str(sb.to_string())
+                }
+                b'[' => {
+                    index++
+
+                    mut arr: [Value] = []
+
+                    loop {
+                        guard index < source.size() else {
+                            throw Error::from_string_literal("unexpected EOF on array")
+                        }
+
+                        match source[index] {
+                            b']' => {
+                                break
+                            }
+                            else => {
+                                arr.push(parse_with_position(index, source))
+                                guard index < source.size() else {
+                                    throw Error::from_string_literal("unexpected EOF on array")
+                                }
+                                whitespace(index, source)
+                                match source[index] {
+                                    b']' => { 
+                                        index++
+                                        break 
+                                    }
+                                    b',' => { 
+                                        index++
+                                        continue 
+                                    }
+                                    else => {
+                                        throw Error::from_string_literal("unexpected character at end of array value")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value::Arr(arr)
+                }
+                b'{' => {
+                    index++
+
+                    mut obj: [String:Value] = [:]
+
+                    loop {
+                        guard index < source.size() else {
+                            throw Error::from_string_literal("unexpected EOF on object")
+                        }
+
+                        match source[index] {
+                            b'}' => {
+                                break
+                            }
+                            else => {
+                                guard parse_with_position(index, source) is Str(key) else {
+                                    throw Error::from_string_literal("key in object is not a string")
+                                }
+                                whitespace(index, source)
+                                guard index < source.size() and source[index] == b':' else {
+                                    throw Error::from_string_literal("':' is expected after an object key")
+                                }
+                                index++
+                                whitespace(index, source)
+
+                                let value = parse_with_position(index, source)
+                                whitespace(index, source)
+
+                                obj.set(key, value)
+
+                                match source[index] {
+                                    b'}' => {
+                                        index++
+                                        break
+                                    }
+                                    b',' => { 
+                                        index++
+                                        continue 
+                                    }
+                                    else => {
+                                        throw Error::from_string_literal("unexpected character at end of object value")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return Value::Obj(obj)
+                } 
+                else => {}
+            }
+            throw Error::from_string_literal("unexpected character at start of value")
+        }
+    }
+}

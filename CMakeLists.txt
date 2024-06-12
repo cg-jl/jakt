@@ -177,6 +177,9 @@ set(SELFHOST_SOURCES
   selfhost/utility.jakt
   selfhost/platform.jakt
   selfhost/cpp_import/common.jakt
+
+  selfhost/ide/jsonrpc.jakt
+
   ${JAKT_CPP_AUTO_IMPORT_EXTRA_SOURCES}
 )
 
@@ -218,6 +221,8 @@ else()
   )
   list(APPEND SELFHOST_STDLIB_SOURCES platform__unknown_compiler.cpp)
 endif()
+
+
 
 set(SELFHOST_CONFIGS
   "jakt.cpp_import.processor=${JAKT_CPP_AUTO_IMPORT_PROCESSOR}"

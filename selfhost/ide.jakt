@@ -9,6 +9,9 @@ import types { comptime_format_impl }
 import utility { panic, todo, join, prepend_to_each, Span }
 import compiler { Compiler }
 
+// TODO: remove this if not needed, required so that codegen produces jsonrpc file
+import ide::jsonrpc
+
 enum Mutability {
     DoesNotApply
     Immutable

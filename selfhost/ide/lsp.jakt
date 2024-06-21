@@ -1,7 +1,7 @@
 import compiler { Compiler }
 import ide::logger { LogFile, Log }
 import ide::reader as jsonrpc
-import ide::message { Event, Dump, MessageId, ErrorCode, send_simple_error, send_response, dump_key_value, dump_string }
+import ide::message { Event, Dump, MessageId, ErrorCode, send_simple_error, send_response, dump_key_value, dump_key, dump_string }
 import ide::parse_json { JsonValue }
 import ide::results as results
 
@@ -38,8 +38,6 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
             lsplog.log("Encountered end of input on the message")
             break
         }
-
-        lsplog.log(format("message: {}", message))
 
         let event = try Event::deserialize(message) catch err {
             lsplog.log(format("Error deserializing event: {}", err))
@@ -96,13 +94,6 @@ fn handle_event(event: Event, toplevel: [String:JsonValue], lsplog: &Log, state:
 }
 
 
-struct ServerCapabilities implements(Dump) {
-    fn dump(this, anon out: &mut StringBuilder) {
-        out.append("{}")
-    }
-}
-
-
 fn initialize(id: &MessageId, toplevel: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
 
     // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
@@ -141,12 +132,39 @@ fn initialize(id: &MessageId, toplevel: [String:JsonValue], state: &mut LspState
     log.log("Server initialized")
 
     // TODO: send server capabilities
-    send_result(
+    send_result_fn(
         id, 
-        &results::Initialize(
-            capabilities: results::ServerCapabilities()
-        )
+        fn(anon out: &mut StringBuilder) {
+            dump_server_capabilities(out)
+        }
     )
+}
+
+fn dump_server_capabilities(anon out: &mut StringBuilder) {
+
+    out.append(b'{')
+
+    defer out.append(b'}')
+
+    eprintln("current build: {:#}", out.to_string())
+
+    dump_key("capabilities", out, is_first: true)
+
+
+    {
+        out.append(b'{')
+        defer out.append(b'}')
+
+        dump_key("textDocumentSync", out, is_first:  true)
+
+        {
+            out.append(b'{')
+            defer out.append(b'}')
+
+            // Notify on open/close
+            dump_key_value("openClose", &true, out, is_first: true)
+        }
+    }
 }
 
 fn send_result_fn(id: &MessageId, anon dumpfn: fn(anon out: &mut StringBuilder) -> void) {

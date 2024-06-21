@@ -94,6 +94,24 @@ type String implements(Dump) {
     }
 }
 
+type bool implements(Dump) {
+    [[inline(always)]]
+    fn dump(this, anon out: &mut StringBuilder) {
+        if this {
+            out.append("true")
+        } else {
+            out.append("false")
+        }
+    }
+}
+
+fn dump_key(anon key: String, anon out: &mut StringBuilder, is_first: bool = false) {
+    if not is_first {
+        out.append(b',')
+    }
+    dump_string(key, out)
+    out.append(b':')
+}
 
 fn dump_any(anon obj: &JsonValue, anon out: &mut StringBuilder) {
     match obj {
@@ -110,11 +128,10 @@ fn dump_any(anon obj: &JsonValue, anon out: &mut StringBuilder) {
             let first = it.next()
             if first is Some(tuple) {
                 let (key, val) = tuple
-                dump_key_value(key, &val, out)
+                dump_key_value(key, &val, out, is_first: true)
             }
 
             for (key, val) in it {
-                out.append(b',')
                 dump_key_value(key, &val, out)
             }
 

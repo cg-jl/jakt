@@ -37,8 +37,6 @@ struct Reader {
 
             mut input = .sb.to_string()
 
-            .log.log(format("Current read buffer: {:#}", input))
-
             // Parse headers
             mut content_length: usize? = None
             while not input.is_empty() and not input.starts_with("\r\n") {
@@ -94,8 +92,6 @@ struct Reader {
                 continue
             }
             .sb.clear()
-
-            .log.log(format("[dbg] value: {:#}", value))
 
             guard value is Obj(obj) else {
                 .log.log(format("message should be JSON-RPC object"))

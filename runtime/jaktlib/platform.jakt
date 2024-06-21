@@ -82,5 +82,6 @@ comptime platform_module(anon mut name: String) throws -> [String] {
 comptime platform_process() throws -> [String] => platform_module("jakt::platform::process")
 comptime platform_fs() throws -> [String] => platform_module("jakt::platform::fs")
 comptime platform_errno() throws -> [String] => platform_module("jakt::platform::errno")
+comptime platform_console() throws -> [String] => platform_module("jakt::platform::console")
 
 comptime is_windows() throws -> bool => Target::active().os == "windows"

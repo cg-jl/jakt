@@ -166,10 +166,14 @@ set(SELFHOST_SOURCES
   selfhost/platform.jakt
   selfhost/cpp_import/common.jakt
 
-  selfhost/ide/jsonrpc.jakt
+  selfhost/ide/lsp.jakt
+  selfhost/ide/reader.jakt
+  selfhost/ide/parse_json.jakt
+  selfhost/ide/logger.jakt
 
   ${JAKT_CPP_AUTO_IMPORT_EXTRA_SOURCES}
 )
+
 
 # FIXME: STDLIB target needed
 set(SELFHOST_STDLIB_SOURCES
@@ -178,6 +182,7 @@ set(SELFHOST_STDLIB_SOURCES
   jakt__file_iterator.cpp
   jakt__platform.cpp
   jakt__platform__utility.cpp
+  jakt__platform__console_common.cpp
   jakt__path.cpp
 )
 
@@ -186,6 +191,7 @@ if(CMAKE_HOST_WIN32)
     jakt__platform__windows_fs.cpp
     jakt__platform__windows_errno.cpp
     jakt__platform__windows_process.cpp
+    jakt__platform__windows_console.cpp
   )
   list(APPEND SELFHOST_STDLIB_SOURCES platform__windows_compiler.cpp)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -193,6 +199,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     jakt__platform__posix_fs.cpp
     jakt__platform__darwin_errno.cpp
     jakt__platform__posix_process.cpp
+    jakt__platform__posix_console.cpp
   )
   list(APPEND SELFHOST_STDLIB_SOURCES platform__posix_compiler.cpp)
 elseif(CMAKE_HOST_UNIX)
@@ -200,12 +207,14 @@ elseif(CMAKE_HOST_UNIX)
     jakt__platform__posix_fs.cpp
     jakt__platform__posix_errno.cpp
     jakt__platform__posix_process.cpp
+    jakt__platform__posix_console.cpp
   )
   list(APPEND SELFHOST_STDLIB_SOURCES platform__posix_compiler.cpp)
 else()
   list(APPEND SELFHOST_STDLIB_SOURCES
     jakt__platform__unknown_fs.cpp
     jakt__platform__unknown_process.cpp
+    jakt__platform__unknown_console.cpp
   )
   list(APPEND SELFHOST_STDLIB_SOURCES platform__unknown_compiler.cpp)
 endif()

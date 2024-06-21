@@ -1,0 +1,331 @@
+import relative parent::utility { is_whitespace, is_ascii_digit, is_ascii_hexdigit, panic }
+
+import extern "AK/Math.h" {
+    namespace AK {
+        extern fn pow<T>(anon a: T, anon b: T) -> T
+    }
+}
+
+
+enum JsonValue {
+    Str(String) // NOTE: JSON strings here are not converted, only checked
+    Arr([JsonValue])
+    Obj([String:JsonValue])
+    // jsonrpc distinguishes between integer and decimal
+    Num(Number)
+    True
+    False
+    Null
+}
+
+enum Number {
+    Integer(i64),
+    Decimal(f64)
+}
+
+// parses a JSON object, expecting the source to have the full object in it
+fn parse(source: String) throws -> JsonValue {
+    mut index = 0uz
+    return parse_with_position(&mut index, &source)
+}
+
+// yields (fraction, exponent) if there is one
+fn parse_fraction(index: &mut usize, source: &String) -> (f64?, i64?) {
+    mut maybe_fraction: f64? = None
+
+    if index < source.length() and source.byte_at(*index) == b'.' {
+        index++
+        let start_index = *index
+        mut fraction = 0f64
+        while index < source.length() and is_ascii_digit(source.byte_at(*index)) {
+            fraction *= 10f64
+            fraction += (source.byte_at(*index) - b'0') as! f64
+            index++
+        }
+        for i in start_index..(*index) {
+            fraction /= 10f64
+        }
+        maybe_fraction = fraction
+    }
+
+    mut maybe_exponent: i64? = None
+
+    if index < source.length() and (source.byte_at(*index) == b'e' or source.byte_at(*index) == b'E') {
+        index++
+        mut exponent: i64 = 1
+        if index < source.length() and source.byte_at(*index) == b'-' {
+            index++
+            exponent = -1
+        } else if index < source.length() and source.byte_at(*index) == b'+' {
+            index++
+            exponent = 1
+        }
+        while index < source.length() and is_ascii_digit(source.byte_at(*index)) {
+            exponent *= 10
+            exponent += (source.byte_at(*index) - b'0') as! i64
+        }
+        maybe_exponent = exponent
+    }
+
+    return (maybe_fraction, maybe_exponent)
+}
+
+fn parse_number_known_integer(index: &mut usize, source: &String, int_part: i64) -> Number {
+    let (maybe_fraction, maybe_exponent) = parse_fraction(index, source)
+
+    if maybe_fraction is None and maybe_exponent is None {
+        return Number::Integer(int_part)
+    }
+
+    mut val = int_part as! f64
+
+    if maybe_fraction is Some(frac) {
+        val += frac
+    }
+
+    if maybe_exponent is Some(exp) {
+        val *= AK::pow<f64>(10f64, exp as! f64)
+    }
+
+
+    return Number::Decimal(val)
+
+}
+
+fn parse_number_nonzero(index: &mut usize, source: &String) -> i64 {
+    mut val = (source.byte_at(*index) - b'0') as! i64
+    index++
+    while index < source.length() and is_ascii_digit(source.byte_at(*index)) {
+        val *= 10
+        val += (source.byte_at(*index) - b'0') as! i64
+        index++
+    }
+    return val
+}
+
+
+fn whitespace(index: &mut usize, source: &String) {
+    while index < source.length() {
+        match source.byte_at(*index) {
+            b' ' | b'\n' | b'\r' | b'\t' => {
+                index++
+                continue
+            }
+            else => { break }
+        }
+    }
+
+}
+
+// Parses one value from the source, keeping track of the position
+fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
+    loop {
+        guard index < source.length() else {
+            throw Error::from_string_literal("unexpected EOF")
+        }
+
+        match source.byte_at(*index) {
+            b' ' | b'\n' | b'\r' | b'\t' => {
+                index++
+                continue
+            }
+            b'f' => {
+                if index + 4 < source.length() and
+                    source.byte_at(*index + 1) == b'a' and
+                    source.byte_at(*index + 2) == b'l' and
+                    source.byte_at(*index + 3) == b's' and
+                    source.byte_at(*index + 4) == b'e' {
+
+                    index += 5
+                    return JsonValue::False()
+                }
+            }
+            b't' => {
+                if index + 3 < source.length() and
+                    source.byte_at(*index + 1) == b'r' and
+                    source.byte_at(*index + 2) == b'u' and
+                    source.byte_at(*index + 3) == b'e' {
+
+                    index += 4
+                    return JsonValue::True
+                }
+            }
+            b'n' => {
+                if index + 3 < source.length() and
+                    source.byte_at(*index + 1) == b'u' and
+                    source.byte_at(*index + 2) == b'l' and
+                    source.byte_at(*index + 3) == b'l' {
+
+                    index += 4
+                    return JsonValue::Null
+                }
+            }
+            b'-' => {
+                index++
+                guard index < source.length() else {
+                    throw Error::from_string_literal("unexpected EOF on number")
+                }
+                let int_part = match source.byte_at(*index) {
+                    b'0' => 0i64,
+                    b'1'..(b'9' + 1) => parse_number_nonzero(index, source),
+                    else => {
+                        throw Error::from_string_literal("number has only negative sign")
+                    }
+                }
+                return JsonValue::Num(match parse_number_known_integer(index, source, int_part) {
+                    Integer(i) => Number::Integer(-i),
+                    Decimal(d) => Number::Decimal(-d),
+                })
+            }
+            b'0' => {
+                index++
+                return JsonValue::Num(parse_number_known_integer(index, source, int_part: 0))
+            }
+            b'1'..(b'9' + 1) => {
+                let int_part = parse_number_nonzero(index, source)
+                return JsonValue::Num(parse_number_known_integer(index, source, int_part))
+            }
+            b'"' => {
+                index++
+                mut sb = StringBuilder::create()
+                loop {
+                    guard index < source.length() else {
+                        throw Error::from_string_literal("unexpected EOF on string literal")
+                    }
+
+                    match source.byte_at(*index) {
+                        b'"' => {
+                            index++
+                            break
+                        }
+                        b'\\' => {
+                            sb.append(b'\\')
+                            index++
+                            guard index < source.length() else {
+                                throw Error::from_string_literal("unexpected EOF on string literal escape code")
+                            }
+                            match source.byte_at(*index) {
+                                b'u' => {
+                                    sb.append('u')
+                                    guard index + 4 <= source.length() else {
+                                        throw Error::from_string_literal("unexpected EOF on string literal '\\u'")
+                                    }
+                                    for i in 0uz..4uz {
+                                        guard is_ascii_hexdigit(source.byte_at(*index + i)) else {
+                                            throw Error::from_string_literal("invalid '\\u' escape code")
+                                        }
+                                        sb.append(source.byte_at(*index + i))
+                                    }
+                                    index += 4
+                                }
+                                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                                    sb.append(source.byte_at(*index))
+                                    index++
+                                }
+                                else => {
+                                    throw Error::from_string_literal("invalid escape code")
+                                }
+                            }
+                        }
+                        else => {
+                            sb.append(source.byte_at(*index))
+                            index++
+                        }
+                    }
+                }
+                // NOTE: the string is unicode valid, even if its interepretation (surrogate pairs)
+                // may not be. We don't bother with the interpretation here, it's unlikely that we need it.
+                return JsonValue::Str(sb.to_string())
+            }
+            b'[' => {
+                index++
+
+                mut arr: [JsonValue] = []
+
+                loop {
+                    guard index < source.length() else {
+                        throw Error::from_string_literal("unexpected EOF on array")
+                    }
+
+                    match source.byte_at(*index) {
+                        b']' => {
+                            break
+                        }
+                        else => {
+                            arr.push(parse_with_position(index, source))
+                            guard index < source.length() else {
+                                throw Error::from_string_literal("unexpected EOF on array")
+                            }
+                            whitespace(index, source)
+                            match source.byte_at(*index) {
+                                b']' => { 
+                                    index++
+                                    break 
+                                }
+                                b',' => { 
+                                    index++
+                                    continue 
+                                }
+                                else => {
+                                    throw Error::from_string_literal("unexpected character at end of array value")
+                                }
+                            }
+                        }
+                    }
+                }
+                return JsonValue::Arr(arr)
+            }
+            b'{' => {
+                index++
+
+                mut obj: [String:JsonValue] = [:]
+
+                loop {
+                    guard index < source.length() else {
+                        throw Error::from_string_literal("unexpected EOF on object")
+                    }
+
+                    match source.byte_at(*index) {
+                        b'}' => {
+                            break
+                        }
+                        else => {
+                            let maybe_key = parse_with_position(index, source)
+                            guard maybe_key  is Str(key) else {
+                                throw Error::from_string_literal("key in object is not a string")
+                            }
+                            whitespace(index, source)
+                            guard index < source.length() and source.byte_at(*index) == b':' else {
+                                throw Error::from_string_literal("':' is expected after an object key")
+                            }
+                            index++
+                            whitespace(index, source)
+
+                            let value = parse_with_position(index, source)
+                            whitespace(index, source)
+
+                            obj.set(key, value)
+
+                            match source.byte_at(*index) {
+                                b'}' => {
+                                    index++
+                                    break
+                                }
+                                b',' => { 
+                                    index++
+                                    continue 
+                                }
+                                else => {
+                                    throw Error::from_string_literal("unexpected character at end of object value")
+                                }
+                            }
+                        }
+                    }
+                }
+                return JsonValue::Obj(obj)
+            } 
+            else => {}
+        }
+        throw Error::from_string_literal("unexpected character at start of value")
+    }
+}

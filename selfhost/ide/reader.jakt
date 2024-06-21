@@ -1,0 +1,120 @@
+import jakt::platform::utility as jakt_utility
+import jakt::platform { platform_console }
+import platform_console() { read_from_stdin }
+import relative parent::utility { panic, is_ascii_digit }
+import ide::logger { Log, set_unbuffered }
+import ide::parse_json as pjson
+import jakt::libc::io { FILE, feof }
+
+
+
+// reads from file descriptor until it can decode a message.
+struct Reader {
+    sb: StringBuilder = StringBuilder::create()
+    stdin_at_eof: bool = false // Whether the last read was the last read
+    log: Log
+    // NOTE: fread_buffer is 4096 bytes long.
+    fread_buffer: raw c_char
+
+    // NOTE: The logger is shared.
+    fn adopt_stdin(log: Log) throws -> Reader {
+        let fread_buffer = allocate<c_char>(count: 4096)
+        return Reader(log, fread_buffer)
+    }
+
+
+    fn next_message(mut this) throws -> [String:JsonValue]? {
+        while not .stdin_at_eof {
+            let res = try read_from_stdin(buffer: .fread_buffer, buffer_size: 4096) catch err {
+                eprintln("[error] cannot read from stdin: {}", err)
+                break
+            }
+            let read_count = res.count
+            .stdin_at_eof = res.at_eof
+
+            .sb.append(string: .fread_buffer, size: read_count)
+
+
+            mut input = .sb.to_string()
+
+            .log.log(format("Current read buffer: {:#}", input))
+
+            // Parse headers
+            mut content_length: usize? = None
+            while not input.is_empty() and not input.starts_with("\r\n") {
+                if input.starts_with("Content-Length: ") {
+                    mut start = 16uz // length of "Content-Length: "
+                    mut end = start
+                    while end < input.length() and is_ascii_digit(input.byte_at(end)) {
+                        end++
+                    }
+                    guard end > start else {
+                        // malformed packet
+                        .log.log("error when parsing content length header: no content length")
+                        .sb.clear()
+                        continue
+                    }
+                    guard input.substring(start, length: end - start).to_number<usize>() is Some(count) else {
+                        .log.log("error when parsing content length header: invalid length")
+                        .sb.clear()
+                        continue
+                    }
+
+                    content_length = count
+                    input = input.substring(start: end, length: input.length() - end)
+                } else {
+                    mut current = 0uz
+                    while current < input.length() and input.byte_at(current) != b'\n' {
+                        current++
+                    }
+                    input = input.substring(start: current, length: input.length() - current)
+                }
+            }
+
+            guard content_length is Some(json_size) else {
+                // Didn't find content length header yet.
+                continue
+            }
+
+            guard input.length() >= json_size else {
+                // Haven't got the full content length yet.
+                continue
+            }
+
+            let json_data = input.substring(start: input.length() - json_size, length: json_size)
+
+            .log.log(format("JSON data:\n{:#}", json_data))
+
+            // In case we have an error, we can debug the error index
+            mut index = 0uz
+
+            let value = try pjson::parse_with_position(&mut index, source: &json_data) catch err {
+                .log.log(format("error when parsing JSON data [{}]: {}", index, err.string()))
+                .sb.clear()
+                continue
+            }
+            .sb.clear()
+
+            guard value is Obj(obj) else {
+                .log.log(format("message should be JSON-RPC object"))
+                continue
+            }
+
+            guard obj.contains("jsonrpc") and obj["jsonrpc"] is Str(version) and version == "2.0" else {
+                .log.log(format("message should have JSONRPC 2.0 version"))
+                continue
+            }
+
+            return Some(obj)
+        }
+        return None
+    }
+
+    fn destroy(mut this) {
+        unsafe { cpp {
+            "free(fread_buffer);"
+        }}
+    }
+
+
+}

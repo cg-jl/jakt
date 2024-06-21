@@ -1,0 +1,5 @@
+
+struct ReadResult {
+    count: usize // The amount that was filled into the buffer
+    at_eof: bool // whether we found EOF after the read.
+}

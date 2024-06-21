@@ -27,6 +27,7 @@ import repl { REPL, serialize_ast_node }
 import typechecker { Typechecker }
 import types { FunctionId, ResolvedNamespace, ScopeId, ModuleId, Value, ValueImpl }
 import utility { Queue, Span, escape_for_quotes, join, write_to_file }
+import ide::lsp { lsp_server }
 import git
 
 import platform_fs() { DirectoryIterator, make_directory }
@@ -90,6 +91,7 @@ fn help() -> String {
     output += "  --print-symbols\t\t\tEmit a machine-readable (JSON) symbol tree.\n"
     output += "  --try-hints\t\t\t\tEmit machine-readable try hints (for IDE integration).\n"
     output += "  -t,--goto-type-def INDEX\t\tReturn the span for the type definition at index.\n"
+    output += "  --lsp\t\tStart LSP server, listening to stdin.\n"
     output += "= Misc:\n"
     output += "  --discover\t\t\t\tDiscover all files in the project, print the dependencies and outputs, then exit.\n"
     output += "  -j,--json-errors\t\t\tEmit machine-readable (JSON) errors.\n"
@@ -528,6 +530,7 @@ fn compiler_main(anon args: [String]) throws -> c_int {
     let project_name = args_parser.option(["--create"])
     let use_ccache = args_parser.flag(["--use-ccache"])
     let user_configuration_specs = args_parser.option_multiple(["--config"])
+    let do_lsp = args_parser.flag(["--lsp"])
 
     mut user_configuration: [String:String] = [:]
     for spec in user_configuration_specs {
@@ -606,21 +609,19 @@ fn compiler_main(anon args: [String]) throws -> c_int {
 
         interpreted_main_arguments.push(arg)
     }
-    if not file_name.has_value() {
+
+    if not file_name.has_value() and not do_lsp {
         eprintln("you must pass a source file")
         eprintln("{}", usage())
         return 1
     }
 
-    let file_path = Path::from_string(file_name!)
     // if file_path.ext() != "jakt" {
     //     eprintln("the compiler expects files with file extension .jakt")
     //     eprintln("{}", usage())
     //     return 1
     // }
 
-    let guessed_output_filename = file_path.basename(strip_extension: true)
-    let output_filename = binary_dir.join(set_output_filename ?? guessed_output_filename).to_string()
 
     mut errors: [JaktError] = []
 
@@ -652,7 +653,12 @@ fn compiler_main(anon args: [String]) throws -> c_int {
 
     compiler.load_prelude()
 
+    if do_lsp {
+        return lsp_server(compiler)
+    }
+
     if format or format_debug or format_inplace {
+        let file_path = Path::from_string(file_name!)
         let directory_or_file_paths = RecursiveFileIterator::make(directory: file_path, extension: "jakt")
         for directory_or_file_path in directory_or_file_paths {
             let file_id = compiler.get_file_id_or_register(directory_or_file_path)
@@ -677,6 +683,10 @@ fn compiler_main(anon args: [String]) throws -> c_int {
 
         return 0
     }
+
+    let file_path = Path::from_string(file_name!)
+    let guessed_output_filename = file_path.basename(strip_extension: true)
+    let output_filename = binary_dir.join(set_output_filename ?? guessed_output_filename).to_string()
 
     let main_file_id = compiler.get_file_id_or_register(file_path)
     let file_is_set = compiler.set_current_file(main_file_id)

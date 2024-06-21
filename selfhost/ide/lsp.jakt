@@ -1,0 +1,31 @@
+import compiler { Compiler }
+import ide::logger { LogFile, Log }
+import ide::reader as jsonrpc
+
+fn lsp_server(compiler: Compiler) throws -> c_int {
+
+    let logfile = LogFile::create(filename: "log.txt") 
+    defer logfile.close()
+
+    mut reader =  jsonrpc::Reader::adopt_stdin(log: Log(file: logfile, name: "reader"))
+
+    defer reader.destroy()
+
+    let lsplog = Log(file: logfile, name: "lsp")
+
+    lsplog.log("Listening on stdin")
+
+    loop {
+        lsplog.log("Awaiting next message")
+        let next_msg = reader.next_message()
+        guard next_msg is Some(message) else {
+            lsplog.log("Encountered end of input on the message")
+            break
+        }
+
+        lsplog.log(format("message: {}", message))
+    }
+
+
+    return 0
+}

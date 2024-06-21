@@ -1,0 +1,99 @@
+
+import jakt::platform::utility { null }
+import jakt::libc::io { FILE, fopen, fclose }
+
+// TODO: this should be in jakt::libc::io
+import extern c "stdio.h" {
+    extern fn setvbuf(stream: raw FILE, buf: raw c_char, mode: c_int, size: usize) -> c_int
+    extern fn fwrite(ptr: raw c_char, elem_size: usize, elem_count: usize, stream: raw FILE) -> usize
+}
+
+
+fn set_unbuffered(fp: raw FILE) -> bool {
+    // Disable buffering
+    mut mode: c_int = 0
+    unsafe { cpp {
+        "mode = _IONBF;"
+    }}
+
+    let setvbuf_res = setvbuf(stream: fp, buf: null<raw c_char>(), mode, size: 0)
+    return setvbuf_res == 0
+}
+
+// Wrapper over a log file. Makes sure the file is unbuffered.
+// Usage:
+// ```
+// let file = LogFile::create(filename: "log.txt")
+// defer file.close()
+// file.log("hello!")
+// ```
+// NOTE: It is not suitable for multithread or multiprocess use,
+// since it opens the file in write mode, and log() assumes full ownership over the stream during its writing. It is designed to be shared amongst multiple named loggers that will take turns at writing in a single thread.
+class LogFile {
+    fp: raw FILE
+
+
+
+    public fn create_log_file(filename: String) throws -> raw FILE {
+        let fp = fopen(filename.c_string(), "w".c_string())
+        if fp == null<raw FILE>() {
+            // TODO: this should be an errno code, that we can
+            // get from Windows/libc. Must check how Jakttest
+            // does it in both Windows and Linux/macOS.
+            throw Error::from_string_literal("Cannot create log file")
+        }
+        if not set_unbuffered(fp) {
+            // NOTE: this may not be a hard error, but since loggers are
+            // meant to make things easier to debug, a logger that buffers
+            // its output makes things harder.
+            throw Error::from_string_literal("Could not set log file to unbuffered")
+        }
+
+        return fp
+    }
+
+    public fn adopt_stream(fp: raw FILE) throws -> LogFile {
+        return LogFile(fp)
+    }
+
+    public fn create(filename: String) throws -> LogFile {
+        let fp = create_log_file(filename)
+
+        return LogFile(fp)
+    }
+
+    public fn log(this, anon mut msg: String) {
+        msg = format("{}\r\n", msg)
+        fwrite(ptr: msg.c_string(), elem_size: 1, elem_count: msg.length(),stream: .fp)
+        // No need to flush; the stream is configured to unbuffered.
+    }
+
+    public fn close(this) {
+        fclose(.fp)
+    }
+}
+
+// Simple logger that writes into a log file with a prefix
+// Usage:
+// ```
+// let logfile = LogFile::create(filename: "foo.txt")
+// defer logfile.close()
+// let foolog = Log(file: logfile, name: "foo")
+// let barlog = Log(file: logfile, name: "bar")
+// foolog.log("foo was here")
+// barlog.log("bar was here")
+// ```
+// Result (foo.txt):
+// ```
+// [foo] foo was here
+// [bar] bar was here
+// ```
+struct Log  {
+    file: LogFile
+    name: String
+
+    public fn log(this, anon mut msg: String) {
+        .file.log(format("[{}] {}", .name, msg))
+    }
+
+}

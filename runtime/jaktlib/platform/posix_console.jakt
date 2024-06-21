@@ -1,0 +1,26 @@
+import jakt::libc::io { FILE, fread, feof }
+import jakt::utility { null }
+import relative parent::console_common { ReadResult }
+
+// Overwrites `buffer` with up to `buffer_size` bytes read from stdin.
+// Returns how much it read and whether this is the last read that can yield
+// data.
+fn read_from_stdin(buffer: raw c_char, buffer_size: usize) throws -> ReadResult {
+
+    // use file as stdin
+    mut fp: raw FILE = null<raw FILE>()
+    unsafe { cpp { "fp = stdin;" }}
+
+    let count = fread(buffer, elem_size: 1, elem_count: buffer_size, stream: fp)
+
+
+    let at_eof = feof(fp) != 0
+
+    let error = ferror(fp)
+
+    guard error == 0 else {
+        throw Error::from_errno(error as! i32)
+    }
+
+    return count
+}

@@ -2672,7 +2672,7 @@ class CheckedProgram {
         }
     }
 
-    public fn type_name(this, anon type_id: TypeId, debug_mode: bool = false) throws -> String {
+    public fn type_name(this, anon type_id: TypeId, debug_mode: bool = true) throws -> String {
         let type = .get_type(type_id)
 
         return match type.qualifiers.is_immutable {

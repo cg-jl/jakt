@@ -1,0 +1,6 @@
+// Compatibility layer for dealing with standard input and consoles across
+// linux, macOS and Windows.
+
+import jakt::platform { platform_module }
+import platform_module("ide::console") { ReadResult, read_from_stdin }
+

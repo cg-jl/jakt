@@ -21,6 +21,11 @@ enum JsonValue {
 enum Number {
     Integer(i64),
     Decimal(f64)
+
+    fn as_i32(this) -> i32? => match this {
+        Integer(n) => n as? i32,
+        Decimal => None
+    }
 }
 
 // parses a JSON object, expecting the source to have the full object in it

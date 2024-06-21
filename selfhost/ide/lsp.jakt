@@ -1,6 +1,8 @@
 import compiler { Compiler }
 import ide::logger { LogFile, Log }
 import ide::reader as jsonrpc
+import ide::message { Request }
+import ide::parse_json { JsonValue }
 
 fn lsp_server(compiler: Compiler) throws -> c_int {
 
@@ -24,8 +26,27 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
         }
 
         lsplog.log(format("message: {}", message))
+
+        let request = try Request::deserialize(message) catch err {
+            lsplog.log(format("Error deserializing request: {}", err))
+            continue
+        }
+
+        handle_request(request, toplevel: message, log: &lsplog)
     }
 
 
     return 0
+}
+
+
+fn handle_request(request: Request, toplevel: [String:JsonValue], log: &Log) {
+    log.log(format("request: {}", request))
+
+    match request.method {
+        "initialize" => {
+
+        }
+        else => {}
+    }
 }

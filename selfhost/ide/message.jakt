@@ -1,113 +1,299 @@
 import utility { panic }
+import ide::parse_json { JsonValue }
 
-namespace jsonrpc {
+struct Message {
+    jsonrpc: String
 
-
-    // `msgdump` must encode the message into a series of UTF-8 JSON encoded key:value pairs, as if it were
-    // an object, but without closing said object. `send_message` already adds the mandatory "jsonrpc":"2.0" key-value pair, opens
-    // and closes the object, and sends it to standard output.
-    fn send_message(anon msgdump: fn(out: &mut StringBuilder) -> void) {
-        mut sb = StringBuilder::create()
-        sb.append(b'{')
-
-        dump_string("jsonrpc", out: &mut sb)
-        sb.append(b':')
-        dump_string("2.0", out: &mut sb)
-
-        msgdump(out: &mut sb)
-
-        sb.append(b'}')
-
-        let contents = sb.to_string()
-
-        print("Content-Length: {}\r\n\r\n{}", contents.length(), contents)
+    fn deserialize(anon obj: [String:JsonValue]) throws -> Message {
+        guard obj.contains("jsonrpc") and obj["jsonrpc"] is Str(s) else {
+            throw Error::from_string_literal("invalid message: missing key")
+        }
+        guard s == "2.0" else {
+            throw Error::from_string_literal("invalid message: jsonrpc must be 2.0")
+        }
+        return Message(jsonrpc: s)
     }
 
-    // NOTE: This should be replaced by StringBuilder::append_escaped_for_json when it correctly dumps all UTF-8 into UTF-8 encoded JSON
-    // Encodes a StringView into UTF-8 JSON, following
-    // RFC7158 section 7: https://www.rfc-editor.org/rfc/rfc7158.txt
-    fn dump_string(anon s: String, out: &mut StringBuilder) {
-        out.append('"')
-        for cp in s.code_points() {
-            // escape codepoint if required
-            match cp {
-                '"' => {
-                    out.append(b'\\')
-                    out.append(b'"')
-                }
-                // special recognizable escapes
-                '\\' => {
-                    out.append(b'\\')
-                    out.append(b'\\')
-                }
-                '\r' => {
-                    out.append(b'\\')
-                    out.append(b'r')
-                }
-                '\t' => {
-                    out.append(b'\\')
-                    out.append(b't')
-                }
-                '\n' => {
-                    out.append(b'\\')
-                    out.append(b'n')
-                }
-                // must be escaped using a single \u
-                0u32..0x0020u32 | 0x80u32..0x10000u32 => {
-                    out.append(b'\\')
-                    out.append(b'u')
-                    encode_utf16_json(out, cp as! u16)
-                }
+}
 
-                // single byte characters
-                0x20u32..0x80u32 => {
-                    out.append(cp as! u8)
-                }
+enum MessageId {
+    Str(String),
+    Int(i32),
 
-                // surrogate pairs
-                0x010000u32..0x110000u32 => {
-                    // To encode each hex UTF-16, following
-                    // RFC2781 section 2.1: https://datatracker.ietf.org/doc/html/rfc2781.html
-                    // uprime can be represented in 20 bits.
-                    let uprime = cp - 0x10000u32
+    fn deserialize(anon obj: JsonValue) throws -> MessageId => match obj {
+        Str(s) => MessageId::Str(s),
+        Num(n) => {
+            guard n.as_i32() is Some(i) else {
+                throw Error::from_string_literal("invalid id: should be integer or string")
+            }
+            yield MessageId::Int(i)
+        }
+        else => {
+            throw Error::from_string_literal("invalid id: should be integer or string")
+        }
+    }
 
-                    // 4 * 2 + 2 = 10 bits free.
-                    // The "third" 0 from 0x8(0b1000) is needed to distinguish between first and second pair (8/C)
-                    mut w1 = 0xD800u16
-                    mut w2 = 0xDC00u16
+    fn dump(this, anon out: &mut StringBuilder) {
+        match this {
+            Str(s) => { dump_string(s, out) }
+            Int(i) => { out.append(format("{}", i)) }
+        }
+    }
+}
 
-                    // 10 high order bits of U' to 10 low-order bits of w1
-                    w1 |= (uprime >> 10) as! u16
-                    // 10 low order bits of U' to 10 low-order bits of w2
-                    w2 |= (uprime & 0x3FF) as! u16
+struct Request {
+    id: MessageId
+    method: String
 
-                    encode_utf16_json(out, w1)
-                    encode_utf16_json(out, w2)
-                }
-                else => {
-                    panic("Cannot encode code point to JSON: out of spec range")
+    fn deserialize(anon obj: [String:JsonValue]) throws -> Request {
+
+        guard obj.contains("id") and obj.contains("method") else {
+            throw Error::from_string_literal("invalid request: missing key")
+        }
+
+        let id = MessageId::deserialize(obj["id"])
+        guard obj["method"] is Str(method) else {
+            throw Error::from_string_literal("invalid request: method should be string")
+        }
+
+        return Request(id, method)
+    }
+}
+
+trait Dump {
+    fn dump(this, anon out: &mut StringBuilder)
+}
+
+enum Response<T> {
+    id: MessageId
+
+    Result(T)
+    Error(ResponseError)
+}
+
+struct ResponseError {
+    code: i32
+    message: String
+    // NOTE: this could be another error type.
+    data: JsonValue?
+
+    fn dump(this, anon out: &mut StringBuilder) {
+        dump_key_value("code", &.code, out)
+        out.append(b',')
+        dump_key_value("message", &.message, out)
+        if .data is Some(val) {
+            out.append(b',')
+            dump_key_value("data", &val, out)
+        }
+    }
+}
+
+type i32 implements(Dump) {
+    // NOTE: The inline here serves a purpose: the compiler doesn't generate
+    // correct code if it isn't there. It will instead use `(i32_value).dump`
+    // which is invalid C++ for type i32.
+    [[inline(always)]]
+    fn dump(this, anon out: &mut StringBuilder) {
+        out.append(format("{}", this))
+    }
+}
+
+type JsonValue implements(Dump) {
+    fn dump(this, anon out: &mut StringBuilder) {
+        dump_any(&this, out)
+    }
+}
+
+type String implements(Dump) {
+    [[inline(always)]]
+    fn dump(this, anon out: &mut StringBuilder) {
+        dump_string(this, out)
+    }
+}
+
+
+fn dump_any(anon obj: &JsonValue, anon out: &mut StringBuilder) {
+    match obj {
+        Str(s) => { dump_string(s, out) }
+        Num(n) => match n {
+            Integer(i) => { out.append(format("{}", i)) }
+            Decimal(d) => { out.append(format("{}", d)) }
+        }
+        Obj(ob) => {
+            out.append(b'{')
+
+            mut it = ob.iterator()
+
+            let first = it.next()
+            if first is Some(tuple) {
+                let (key, val) = tuple
+                dump_key_value(key, &val, out)
+            }
+
+            for (key, val) in it {
+                out.append(b',')
+                dump_key_value(key, &val, out)
+            }
+
+            out.append(b'}')
+        }
+        Arr(arr) => {
+            out.append(b'[')
+
+            if arr.size() != 0 {
+                dump_any(&arr[0], out)
+                for i in 1..arr.size() {
+                    out.append(b',')
+                    dump_any(&arr[i], out)
                 }
             }
+
+            out.append(b']')
         }
-        // ending quote.
-        out.append('"')
+        True => { out.append("true") }
+        False => { out.append("false") }
+        Null => { out.append("null") }
     }
+}
 
-    fn encode_utf16_json(out: &mut StringBuilder, anon cp: u16) {
-        encode_nibble(out, cp >> (4*3))
-        encode_nibble(out, cp >> (4*2))
-        encode_nibble(out, cp >> (4*1))
-        encode_nibble(out, cp >> (4*0))
-    }
 
-    fn encode_nibble(out: &mut StringBuilder, anon nibble: u16) {
-        let value = (nibble & 0xf) as! u8
-        if value >= 10 {
-            out.append(b'a' + (value - 10))
-        } else {
-            out.append(b'0' + value)
+fn dump_key_value<T requires(Dump)>(anon key: String, anon val: &T, anon out: &mut StringBuilder) {
+    dump_string(key, out)
+    out.append(b':')
+    val.dump(out)
+}
+
+fn send_response<T>(anon response: Response<T>) {
+    mut out = StringBuilder::create()
+
+    out.append(b'{')
+    dump_string("jsonrpc", &mut out)
+    out.append(b':')
+    dump_string("2.0", &mut out)
+
+    dump_string("id", &mut out)
+    out.append(b':')
+    response.id.dump(&mut out)
+
+    match response {
+        Result(res) => {
+            res.dump(&mut out)
+        }
+        Error(err) => {
+            err.dump(&mut out)
         }
     }
 
+    out.append(b'}')
+
+    let result = out.to_string()
+    print("Content-Length: {}\r\n\r\n{}", result.length(), result)
+}
+
+
+// `msgdump` must encode the message into a series of UTF-8 JSON encoded key:value pairs, as if it were
+// an object, but without closing said object. `send_message` already adds the mandatory "jsonrpc":"2.0" key-value pair, opens
+// and closes the object, and sends it to standard output.
+fn send_message(anon msgdump: fn(out: &mut StringBuilder) -> void) {
+    mut sb = StringBuilder::create()
+    sb.append(b'{')
+
+    dump_string("jsonrpc", out: &mut sb)
+    sb.append(b':')
+    dump_string("2.0", out: &mut sb)
+
+    msgdump(out: &mut sb)
+
+    sb.append(b'}')
+
+    let contents = sb.to_string()
+
+    print("Content-Length: {}\r\n\r\n{}", contents.length(), contents)
+}
+
+// NOTE: This should be replaced by StringBuilder::append_escaped_for_json when it correctly dumps all UTF-8 into UTF-8 encoded JSON
+// Encodes a StringView into UTF-8 JSON, following
+// RFC7158 section 7: https://www.rfc-editor.org/rfc/rfc7158.txt
+fn dump_string(anon s: String, out: &mut StringBuilder) {
+    out.append('"')
+    for cp in s.code_points() {
+        // escape codepoint if required
+        match cp {
+            '"' => {
+                out.append(b'\\')
+                out.append(b'"')
+            }
+            // special recognizable escapes
+            '\\' => {
+                out.append(b'\\')
+                out.append(b'\\')
+            }
+            '\r' => {
+                out.append(b'\\')
+                out.append(b'r')
+            }
+            '\t' => {
+                out.append(b'\\')
+                out.append(b't')
+            }
+            '\n' => {
+                out.append(b'\\')
+                out.append(b'n')
+            }
+            // must be escaped using a single \u
+            0u32..0x0020u32 | 0x80u32..0x10000u32 => {
+                out.append(b'\\')
+                out.append(b'u')
+                encode_utf16_json(out, cp as! u16)
+            }
+
+            // single byte characters
+            0x20u32..0x80u32 => {
+                out.append(cp as! u8)
+            }
+
+            // surrogate pairs
+            0x010000u32..0x110000u32 => {
+                // To encode each hex UTF-16, following
+                // RFC2781 section 2.1: https://datatracker.ietf.org/doc/html/rfc2781.html
+                // uprime can be represented in 20 bits.
+                let uprime = cp - 0x10000u32
+
+                // 4 * 2 + 2 = 10 bits free.
+                // The "third" 0 from 0x8(0b1000) is needed to distinguish between first and second pair (8/C)
+                mut w1 = 0xD800u16
+                mut w2 = 0xDC00u16
+
+                // 10 high order bits of U' to 10 low-order bits of w1
+                w1 |= (uprime >> 10) as! u16
+                // 10 low order bits of U' to 10 low-order bits of w2
+                w2 |= (uprime & 0x3FF) as! u16
+
+                encode_utf16_json(out, w1)
+                encode_utf16_json(out, w2)
+            }
+            else => {
+                panic("Cannot encode code point to JSON: out of spec range")
+            }
+        }
+    }
+    // ending quote.
+    out.append('"')
+}
+
+fn encode_utf16_json(out: &mut StringBuilder, anon cp: u16) {
+    encode_nibble(out, cp >> (4*3))
+    encode_nibble(out, cp >> (4*2))
+    encode_nibble(out, cp >> (4*1))
+    encode_nibble(out, cp >> (4*0))
+}
+
+fn encode_nibble(out: &mut StringBuilder, anon nibble: u16) {
+    let value = (nibble & 0xf) as! u8
+    if value >= 10 {
+        out.append(b'a' + (value - 10))
+    } else {
+        out.append(b'0' + value)
+    }
 }
 

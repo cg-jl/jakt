@@ -1,11 +1,23 @@
 import compiler { Compiler }
 import ide::logger { LogFile, Log }
 import ide::reader as jsonrpc
-import ide::message { Request }
+import ide::message { Event, Dump, MessageId, ErrorCode, send_simple_error, send_response, dump_key_value, dump_string }
 import ide::parse_json { JsonValue }
+import ide::results as results
+
+struct LspState {
+    initialized: bool = false
+    shutdown_requested: bool = false
+    exit_requested: bool = false
+    // TODO: if the parent process is not alive then the server should exit
+    // its process. Should we poll?
+    parent_process: i32? = None
+}
 
 fn lsp_server(compiler: Compiler) throws -> c_int {
 
+    // FIXME: The logfile should be customizable and/or removable.
+    // This will mean that we will be wasting time creating strings for logging and not producing them anywhere. If any formatter API comes along, we will be able to remove them completely.
     let logfile = LogFile::create(filename: "log.txt") 
     defer logfile.close()
 
@@ -17,7 +29,9 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
 
     lsplog.log("Listening on stdin")
 
-    loop {
+    mut state = LspState()
+
+    while not state.exit_requested {
         lsplog.log("Awaiting next message")
         let next_msg = reader.next_message()
         guard next_msg is Some(message) else {
@@ -27,26 +41,125 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
 
         lsplog.log(format("message: {}", message))
 
-        let request = try Request::deserialize(message) catch err {
-            lsplog.log(format("Error deserializing request: {}", err))
+        let event = try Event::deserialize(message) catch err {
+            lsplog.log(format("Error deserializing event: {}", err))
+            // do not send parse error back; since notifications also exist
+            // and we're skipping them.
+            // send_simple_error(id: MessageId::Int(0), code: -32700)
             continue
         }
 
-        handle_request(request, toplevel: message, log: &lsplog)
+        handle_event(event, toplevel: message, &lsplog, &mut state)
     }
 
-
-    return 0
+    // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#shutdown
+    if state.shutdown_requested {
+        return 0
+    } else {
+        return 1
+    }
 }
 
 
-fn handle_request(request: Request, toplevel: [String:JsonValue], log: &Log) {
-    log.log(format("request: {}", request))
+fn handle_event(event: Event, toplevel: [String:JsonValue], lsplog: &Log, state: &mut LspState) {
+    lsplog.log(format("event: {}", event))
 
-    match request.method {
-        "initialize" => {
+    match event {
+        Request(id) => {
+            if state.shutdown_requested {
+                send_simple_error(&id, code: ErrorCode::InvalidRequest)
+            } else {
+                match event.method {
+                    "initialize" => {
+                        initialize(&id, toplevel, state, lsplog)
+                    }
+                    "shutdown" => {
+                        lsplog.log("Shutdown requested")
+                        state.shutdown_requested = true
 
+                    }
+                    else => {}
+                }
+            }
         }
-        else => {}
+        Notification => {
+            if event.method == "exit" {
+                lsplog.log("Exit requested")
+                state.exit_requested = true
+            } else if state.initialized and not state.shutdown_requested {
+                // Check notification
+                lsplog.log(format("Notification method: {}", event.method))
+            }
+            // Drop notification
+        }
     }
+}
+
+
+struct ServerCapabilities implements(Dump) {
+    fn dump(this, anon out: &mut StringBuilder) {
+        out.append("{}")
+    }
+}
+
+
+fn initialize(id: &MessageId, toplevel: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
+
+    // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
+    let log = lsplog.sub(name: "initialize")
+
+    guard not state.initialized else {
+        log.log("invalid request: server is already initialized")
+        send_simple_error(id, code: ErrorCode::AlreadyInitialized)
+        return
+    }
+
+    if toplevel.get("processId") is Some(process_id_obj) {
+        match process_id_obj {
+            Num(n) => {
+                if n is Integer(i) {
+                    state.parent_process = i as? i32
+                } else {
+                    log.log("invalid processId")
+                    send_simple_error(id, code: ErrorCode::InvalidParams)
+                }
+            }
+            Null => {
+                state.parent_process = None
+            }
+            else => {
+                log.log("invalid processId")
+                send_simple_error(id, code: ErrorCode::InvalidParams)
+            }
+        }
+    }
+
+    // TODO: workspace folders
+    // TODO: client capabilities
+
+    state.initialized = true
+    log.log("Server initialized")
+
+    // TODO: send server capabilities
+    send_result(
+        id, 
+        &results::Initialize(
+            capabilities: results::ServerCapabilities()
+        )
+    )
+}
+
+fn send_result_fn(id: &MessageId, anon dumpfn: fn(anon out: &mut StringBuilder) -> void) {
+    send_response(id, fn[&dumpfn](anon out: &mut StringBuilder) {
+        out.append(b',')
+        dump_string("result", out)
+        out.append(b':')
+        dumpfn(out)
+    })
+}
+
+fn send_result<R requires(Dump)>(id: &MessageId, anon res: &R) {
+    send_response(id, fn[&res](anon out: &mut StringBuilder) {
+        dump_key_value("result", res, out)
+    })
 }

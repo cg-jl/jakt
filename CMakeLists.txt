@@ -171,6 +171,7 @@ set(SELFHOST_SOURCES
   selfhost/ide/parse_json.jakt
   selfhost/ide/logger.jakt
   selfhost/ide/message.jakt
+  selfhost/ide/results.jakt
 
   ${JAKT_CPP_AUTO_IMPORT_EXTRA_SOURCES}
 )

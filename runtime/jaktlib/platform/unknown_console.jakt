@@ -1,6 +1,13 @@
 import jakt::utility { panic }
 import ide::console_common { ReadResult }
 
+
+fn write_raw_stdout(buffer: raw c_char, count: usize) throws {
+
+    panic("Compiler with unknown platform cannot write to output. Please obtain a Stage 1 build of Jakt to use this feature.")
+
+}
+
 fn read_from_stdin(buffer: raw c_char, buffer_size: usize) throws -> ReadResult {
     panic("Compiler with unknown platform cannot read from input. Please obtain a Stage 1 build of Jakt to use this feature.")
 }

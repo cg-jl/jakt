@@ -92,6 +92,11 @@ struct Log  {
     file: LogFile
     name: String
 
+    // yields a logger with prefix = {prefix}/{name}
+    fn sub(this, name: String) -> Log {
+        return Log(file: .file, name: format("{}/{}", .name, name))
+    }
+
     public fn log(this, anon mut msg: String) {
         .file.log(format("[{}] {}", .name, msg))
     }

@@ -95,6 +95,8 @@ struct Reader {
             }
             .sb.clear()
 
+            .log.log(format("[dbg] value: {:#}", value))
+
             guard value is Obj(obj) else {
                 .log.log(format("message should be JSON-RPC object"))
                 continue

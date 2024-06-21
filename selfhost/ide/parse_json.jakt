@@ -254,6 +254,7 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
 
                     match source.byte_at(*index) {
                         b']' => {
+                            index++
                             break
                         }
                         else => {
@@ -292,6 +293,7 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
 
                     match source.byte_at(*index) {
                         b'}' => {
+                            index++
                             break
                         }
                         else => {

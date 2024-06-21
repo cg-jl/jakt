@@ -1,5 +1,8 @@
 import utility { panic }
 import ide::parse_json { JsonValue }
+import jakt::platform { platform_console }
+import jakt::platform::utility { null }
+import platform_console() { write_raw_stdout }
 
 struct Message {
     jsonrpc: String
@@ -16,7 +19,7 @@ struct Message {
 
 }
 
-enum MessageId {
+enum MessageId implements(Dump) {
     Str(String),
     Int(i32),
 
@@ -41,51 +44,31 @@ enum MessageId {
     }
 }
 
-struct Request {
-    id: MessageId
+enum Event {
     method: String
 
-    fn deserialize(anon obj: [String:JsonValue]) throws -> Request {
+    Notification
+    Request(id: MessageId)
 
-        guard obj.contains("id") and obj.contains("method") else {
-            throw Error::from_string_literal("invalid request: missing key")
+    fn deserialize(anon obj: [String:JsonValue]) throws -> Event {
+        guard obj.contains("method") else {
+            throw Error::from_string_literal("invalid: missing 'method'")
         }
-
-        let id = MessageId::deserialize(obj["id"])
         guard obj["method"] is Str(method) else {
-            throw Error::from_string_literal("invalid request: method should be string")
+            throw Error::from_string_literal("invalid: 'method' should be a string")
         }
 
-        return Request(id, method)
+        if obj.get("id") is Some(id_obj) {
+            return Event::Request(method, id: MessageId::deserialize(id_obj))
+        } else {
+            return Event::Notification(method)
+        }
+
     }
 }
 
 trait Dump {
     fn dump(this, anon out: &mut StringBuilder)
-}
-
-enum Response<T> {
-    id: MessageId
-
-    Result(T)
-    Error(ResponseError)
-}
-
-struct ResponseError {
-    code: i32
-    message: String
-    // NOTE: this could be another error type.
-    data: JsonValue?
-
-    fn dump(this, anon out: &mut StringBuilder) {
-        dump_key_value("code", &.code, out)
-        out.append(b',')
-        dump_key_value("message", &.message, out)
-        if .data is Some(val) {
-            out.append(b',')
-            dump_key_value("data", &val, out)
-        }
-    }
 }
 
 type i32 implements(Dump) {
@@ -156,59 +139,72 @@ fn dump_any(anon obj: &JsonValue, anon out: &mut StringBuilder) {
     }
 }
 
-
-fn dump_key_value<T requires(Dump)>(anon key: String, anon val: &T, anon out: &mut StringBuilder) {
+fn dump_key_value<T requires(Dump)>(anon key: String, anon val: &T, anon out: &mut StringBuilder, is_first: bool = false) {
+    if not is_first {
+        out.append(b',')
+    }
     dump_string(key, out)
     out.append(b':')
     val.dump(out)
 }
 
-fn send_response<T>(anon response: Response<T>) {
+
+// FIXME: all of these are negative, but the compiler thinks it's not a constant value.
+enum ErrorCode : i32 {
+    InvalidRequest = 32600i32,
+    InvalidParams = 32602i32,
+    ParseError = 32700i32
+    AlreadyInitialized = 32002
+}
+
+fn send_simple_error(id: &MessageId, code: ErrorCode) {
+    let icode = -(code as! i32)
+    send_response(id, fn[icode](anon out: &mut StringBuilder) {
+        dump_key_value("code", &icode, out)
+    })
+}
+
+import ide::logger { LogFile, Log }
+
+fn send_raw(anon result: String) {
+    mut sb = StringBuilder::create()
+    // NOTE: format() and out() convert newlines to CRLF automatically under windows, and doesn't on non-windows. Hence, to ensure that we get the proper bytes,
+    // I have to format things more manually.
+    sb.append(format("Content-Length: {}", result.length()))
+    sb.append(b'\r')
+    sb.append(b'\n')
+    sb.append(b'\r')
+    sb.append(b'\n')
+    sb.append(result)
+    let wholemsg = sb.to_string()
+
+    // Don't expect the length to surpass 4GiB.
+    // FIXME: The const_cast here is fine, but it could be avoidable by
+    // having the compiler support const raw pointers.
+    mut buffer: raw c_char = null<raw c_char>()
+    unsafe { cpp { "buffer = const_cast<char *>(wholemsg.characters());" }}
+    must write_raw_stdout(buffer, count: wholemsg.length() as! u32)
+
+    // FIXME: This is for debugging, shouldn't be here.
+    let lastdump = try LogFile::create(filename: "raw.txt") catch {
+        return
+    }
+    defer lastdump.close()
+    lastdump.log(wholemsg)
+}
+
+fn send_response(id: &MessageId, anon dumpfn: fn(anon out: &mut StringBuilder) -> void) {
     mut out = StringBuilder::create()
 
     out.append(b'{')
-    dump_string("jsonrpc", &mut out)
-    out.append(b':')
-    dump_string("2.0", &mut out)
+    dump_key_value("jsonrpc", &"2.0", &mut out, is_first: true)
+    dump_key_value("id", &id, &mut out)
 
-    dump_string("id", &mut out)
-    out.append(b':')
-    response.id.dump(&mut out)
-
-    match response {
-        Result(res) => {
-            res.dump(&mut out)
-        }
-        Error(err) => {
-            err.dump(&mut out)
-        }
-    }
+    dumpfn(&mut out)
 
     out.append(b'}')
 
-    let result = out.to_string()
-    print("Content-Length: {}\r\n\r\n{}", result.length(), result)
-}
-
-
-// `msgdump` must encode the message into a series of UTF-8 JSON encoded key:value pairs, as if it were
-// an object, but without closing said object. `send_message` already adds the mandatory "jsonrpc":"2.0" key-value pair, opens
-// and closes the object, and sends it to standard output.
-fn send_message(anon msgdump: fn(out: &mut StringBuilder) -> void) {
-    mut sb = StringBuilder::create()
-    sb.append(b'{')
-
-    dump_string("jsonrpc", out: &mut sb)
-    sb.append(b':')
-    dump_string("2.0", out: &mut sb)
-
-    msgdump(out: &mut sb)
-
-    sb.append(b'}')
-
-    let contents = sb.to_string()
-
-    print("Content-Length: {}\r\n\r\n{}", contents.length(), contents)
+    send_raw(out.to_string())
 }
 
 // NOTE: This should be replaced by StringBuilder::append_escaped_for_json when it correctly dumps all UTF-8 into UTF-8 encoded JSON

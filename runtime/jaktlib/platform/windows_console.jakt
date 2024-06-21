@@ -2,6 +2,8 @@
 import jakt::platform::console_common { ReadResult }
 import jakt::platform::utility { null }
 
+// NOTE: These headers define 'min' and 'max' macros that we aren't going to use and that stop our build process, since they are included in '__unified_forward.h'.
+
 
 import extern "windows.h" {
     extern struct HANDLE {}
@@ -14,19 +16,50 @@ import extern "windows.h" {
     extern fn GetStdHandle(anon nStdHandle: c_int) -> HANDLE
 } before_include define { NOMINMAX = "1" }
 
-// NOTE: This header and stdlib.h defines min and max macros that we aren't going to use and that stop our build process.
-import extern "errhandlingapi.h" {
+import extern c "errhandlingapi.h" {
     extern fn GetLastError() -> c_int
 } before_include define { NOMINMAX = "1" }
 
 import extern c "stdlib.h"  {
-    // TODO: This functionality should be available through AK's stdlib.
+    // TODO: This functionality may be available through AK's stdlib.
     // I only found Kernel\Library\Stdlib.h, and not sure if we're OK to use it.
     // Other utilities like AK\ByteBuffer.h use __builtin_memmove() directly. Maybe that's fine.
     extern fn memmove(dest: raw void, src: raw void, count: usize)
 } before_include define { NOMINMAX = "1" }
 
-import extern c "fileapi.h" {} before_include define { NOMINMAX = "1" }
+import extern c "fileapi.h" {
+    extern struct OVERLAPPED {}
+    extern fn WriteFile(hFile: HANDLE, lpBuffer: raw void, nNumberOfBytesToWrite: u32, lpNumberOfBytesWritten: raw u32, lpOverlapped: raw OVERLAPPED) -> bool
+} before_include define { NOMINMAX = "1" }
+
+// write to standard output. May throw on things like broken pipes.
+// When using the thrown code in upper abstracted code, make sure to distinct
+// between each platform's error codes. This does not unify them.
+// Note that since Windows allows writes up to 4GiB, the rest will match this // upper bound.
+fn write_raw_stdout(buffer: raw c_char, count: u32) throws {
+
+
+
+    // https://learn.microsoft.com/en-us/windows/console/getstdhandle
+    mut nStdHandle: c_int = 0
+    unsafe { cpp { "nStdHandle = STD_OUTPUT_HANDLE;" }}
+
+    let out_handle = GetStdHandle(nStdHandle)
+
+
+    // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-writefile
+    mut ok: bool = false
+    unsafe { cpp {
+        // NOTE: cpp is needed here because lpNumberOfBytesWritten is `unsigned long *`, which is not currently representable in Jakt.
+        "ok = WriteFile(out_handle, buffer, count, NULL, NULL);"
+    } }
+
+
+    guard ok else {
+        throw Error::from_errno(GetLastError() as! i32)
+    }
+
+}
 
 // Wrapper around ReadConsole: https://learn.microsoft.com/en-us/windows/console/readconsole
 // Overwrites `buffer` with up to `buffer_size` bytes read from stdin.
@@ -51,18 +84,6 @@ fn read_from_stdin(buffer: raw c_char, buffer_size: usize) throws -> ReadResult 
         throw Error::from_errno(err)
     }
 
-    mut is_console: bool = false
-
-    mut lpmode: u32 = 0
-
-    unsafe { cpp {
-        // https://stackoverflow.com/questions/22972071/is-there-a-way-to-determine-whether-stdout-is-pointing-to-the-console
-        "DWORD _unused_lpmode;"
-        "is_console = (GetConsoleMode(hConsoleInput, &_unused_lpmode)) != FALSE;"
-
-        "lpmode = _unused_lpmode;"
-    }}
-
     mut read_count: usize = 0
 
 
@@ -81,8 +102,8 @@ fn read_from_stdin(buffer: raw c_char, buffer_size: usize) throws -> ReadResult 
         }
     }
 
-    // We cannot use ReadFile's return in conjuction with readCount
-    // because the handle could be a pipe.
+    // We cannot use ReadFile's return in conjuction with read_count because
+    // the handle could (and the LSP server expects it to) be a pipe.
     mut has_eof: bool = false
 
     if not ok {

@@ -1,0 +1,17 @@
+import ide::message { Dump, dump_key_value }
+
+struct ServerCapabilities implements(Dump) {
+    fn dump(this, anon out: &mut StringBuilder) {
+        out.append("{}")
+    }
+}
+
+struct Initialize implements(Dump) {
+    capabilities: ServerCapabilities
+
+    fn dump(this, anon out: &mut StringBuilder) {
+        out.append(b'{')
+        dump_key_value("capabilities", &.capabilities, out, is_first: true)
+        out.append(b'}')
+    }
+}

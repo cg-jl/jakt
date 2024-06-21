@@ -1,6 +1,26 @@
-import jakt::libc::io { FILE, fread, feof }
+import jakt::libc::io { FILE, fread, feof, fwrite }
 import jakt::utility { null }
 import relative parent::console_common { ReadResult }
+
+
+// write to standard output. May throw on things like broken pipes.
+// When using the thrown code in upper abstracted code, make sure to distinct
+// between each platform's error codes. This does not unify them.
+// Note that since Windows allows writes up to 4GiB, the rest will match this // upper bound.
+fn write_raw_stdout(buffer: raw c_char, count: u32) throws {
+
+    mut fp: raw FILE = null<raw FILE>()
+    unsafe { cpp { "fp = stdout;" } }
+
+    fwrite(buffer, elem_size: 1, elem_count: count as! usize, stream:  fp)
+
+    let error = ferror(fp)
+
+    guard error == 0 else {
+        throw Error::from_errno(error as! i32)
+    }
+
+}
 
 // Overwrites `buffer` with up to `buffer_size` bytes read from stdin.
 // Returns how much it read and whether this is the last read that can yield

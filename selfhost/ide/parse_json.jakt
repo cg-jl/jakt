@@ -8,7 +8,7 @@ import extern "AK/Math.h" {
 
 
 enum JsonValue {
-    Str(String) // NOTE: JSON strings here are not converted, only checked
+    Str(String)
     Arr([JsonValue])
     Obj([String:JsonValue])
     // jsonrpc distinguishes between integer and decimal
@@ -192,7 +192,7 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
             }
             b'"' => {
                 index++
-                mut sb = StringBuilder::create()
+                mut sb = StringDecoder()
                 loop {
                     guard index < source.length() else {
                         throw Error::from_string_literal("unexpected EOF on string literal")
@@ -204,28 +204,59 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
                             break
                         }
                         b'\\' => {
-                            sb.append(b'\\')
                             index++
                             guard index < source.length() else {
                                 throw Error::from_string_literal("unexpected EOF on string literal escape code")
                             }
                             match source.byte_at(*index) {
                                 b'u' => {
-                                    sb.append('u')
+                                    index++
                                     guard index + 4 <= source.length() else {
                                         throw Error::from_string_literal("unexpected EOF on string literal '\\u'")
                                     }
+                                    mut value: u16 = 0
                                     for i in 0uz..4uz {
                                         guard is_ascii_hexdigit(source.byte_at(*index + i)) else {
                                             throw Error::from_string_literal("invalid '\\u' escape code")
                                         }
-                                        sb.append(source.byte_at(*index + i))
+                                        value <<= 4
+                                        value |= decode_nibble(source.byte_at(*index + i))
                                     }
+                                    sb.add(value)
                                     index += 4
                                 }
-                                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
-                                    sb.append(source.byte_at(*index))
+                                b'"' => {
                                     index++
+                                    sb.add(b'"' as! u16)
+                                }
+
+                                b'\\' => {
+                                    index++
+                                    sb.add(b'\\' as! u16)
+                                }
+                                b'/' => {
+                                    index++
+                                    sb.add(b'/' as! u16)
+                                }
+                                b'b' => {
+                                    index++
+                                    sb.add(0x08)
+                                }
+                                b'f' => {
+                                    index++
+                                    sb.add(0xC0)
+                                } 
+                                b'n' => {
+                                    index++
+                                    sb.add(b'\n' as! u16)
+                                }
+                                b'r' => {
+                                    index++
+                                    sb.add(b'\r' as! u16)
+                                }
+                                b't' => {
+                                    index++
+                                    sb.add(b'\t' as! u16)
                                 }
                                 else => {
                                     throw Error::from_string_literal("invalid escape code")
@@ -233,14 +264,12 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
                             }
                         }
                         else => {
-                            sb.append(source.byte_at(*index))
+                            sb.add(source.byte_at(*index) as! u16)
                             index++
                         }
                     }
                 }
-                // NOTE: the string is unicode valid, even if its interepretation (surrogate pairs)
-                // may not be. We don't bother with the interpretation here, it's unlikely that we need it.
-                return JsonValue::Str(sb.to_string())
+                return JsonValue::Str(sb.end())
             }
             b'[' => {
                 index++
@@ -334,5 +363,85 @@ fn parse_with_position(index: &mut usize, source: &String) throws -> JsonValue {
             else => {}
         }
         throw Error::from_string_literal("unexpected character at start of value")
+    }
+}
+
+struct StringDecoder {
+    sb: StringBuilder = StringBuilder::create()
+    state: DecodeState = DecodeState::AtNext
+
+    fn end(this) throws -> String {
+        guard .state is AtNext else {
+            throw Error::from_string_literal("surrogate pair starts and doesn't have an end")
+        }
+        return .sb.to_string()
+    }
+
+    fn add(mut this, anon next: u16) throws {
+        //  Decoding from UTF16 to UTF8 is done via this table:
+        //  https://es.wikipedia.org/wiki/UTF-8
+        match .state {
+            AtNext => match next {
+                // ascii
+                0x00u16..0x80u16 => {
+                    .sb.append(next as! u8)
+                }
+                // Basic Multilingual Plane: two-byte encoded
+                0x80u16..0x800u16 => {
+                    .sb.append(((next >> 6) as! u8) | 0xC0)
+                    .sb.append((next & 0x3F) as! u8 | 0x80)
+                }
+                // Surrogate pair start
+                0xD800u16..0xDC00u16 => {
+                    .state = DecodeState::FirstSurrogate(next)
+                }
+                // Surrogate pair end (failure)
+                0xDC00u16..0xDD00u16 => {
+                    throw Error::from_string_literal("surrogate pair end without start")
+                }
+
+                // Basic Multilingual Plane: three-byte encoded
+                else => {
+                    .sb.append((next >> 12) as! u8 | 0xE0)
+                    .sb.append(((next >> 6) & 0x3F) as! u8 | 0x80)
+                    .sb.append((next & 0x3F) as! u8 | 0x80)
+                }
+
+
+            }
+            FirstSurrogate(wzy) => {
+                let wzy = next
+                let yx = next
+                guard yx >= 0xDC00 and yx < 0xDD00 else {
+                    throw Error::from_string_literal("surrogate pair second value must be in 0xDC00..=0xDCFF range")
+                }
+
+                let u = ((wzy >> 6) & 0xf) + 1
+
+                .sb.append((u >> 2) as! u8 | 0xF8)
+                .sb.append((u & 0x3) as! u8 << 4 |((wzy >> 2) & 0xf) as! u8 |0x80)
+                .sb.append((wzy & 0x3) as! u8 << 4 |((yx >> 6)& 0xf) as! u8 |0x80)
+                .sb.append((yx & 0x3F) as! u8 | 0x80)
+
+                .state = DecodeState::AtNext
+            }
+        }
+    }
+}
+
+enum DecodeState {
+    AtNext
+    FirstSurrogate(u16)
+}
+
+
+fn decode_nibble(anon ch: u8) throws -> u16 {
+    return match ch {
+        b'0'..(b'9' +1) => (ch - b'0') as! u16
+        b'a'..(b'f' + 1) => (ch - b'a' + 10) as! u16
+        b'A'..(b'F' + 1) => (ch - b'A' + 10) as! u16
+        else => {
+            throw Error::from_string_literal("invalid code nibble")
+        }
     }
 }

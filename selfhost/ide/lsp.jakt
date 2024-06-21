@@ -12,7 +12,14 @@ struct LspState {
     // TODO: if the parent process is not alive then the server should exit
     // its process. Should we poll?
     parent_process: i32? = None
+    textDocument: TextDocumentState = TextDocumentState()
 }
+
+struct TextDocumentState {
+    opened_uris: [String:TextDocument] = [:]
+}
+
+
 
 fn lsp_server(compiler: Compiler) throws -> c_int {
 
@@ -86,11 +93,75 @@ fn handle_event(event: Event, toplevel: [String:JsonValue], lsplog: &Log, state:
                 state.exit_requested = true
             } else if state.initialized and not state.shutdown_requested {
                 // Check notification
-                lsplog.log(format("Notification method: {}", event.method))
+                match event.method {
+                    "textDocument/didOpen" => did_open(toplevel, state, &lsplog)
+                    "textDocument/didClose" => {
+                        guard toplevel.get("params") is Some(jparams) else { return }
+                        guard jparams is Obj(params) else { return }
+                        did_close(params, state, &lsplog)
+                    }
+                    else => {}
+                }
             }
             // Drop notification
         }
     }
+}
+
+struct TextDocument {
+    version: i64
+    text: String
+    uri: String
+    // TODO: get file id from compiler
+}
+
+fn did_close(params: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
+    let log = lsplog.sub(name: "textDocument/didClose")
+
+    guard params.get("textDocument") is Some(jtdoc) else { return } 
+    guard jtdoc is Obj(tdoc) else { return }
+
+    guard tdoc.get("uri") is Some(juri) else { return }
+    guard juri is Str(uri) else { return }
+
+    log.log(format("Closed {}", uri))
+
+    // unregister that file.
+    state.textDocument.opened_uris.remove(uri)
+
+}
+
+fn did_open(toplevel: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
+    let log = lsplog.sub(name: "textDocument/didOpen")
+
+
+    guard toplevel.get("params") is Some(jparams) else { return }
+    guard jparams is Obj(params) else { return }
+
+    guard params.get("textDocument") is Some(jtdoc) else { return }
+    guard jtdoc is Obj(tdoc) else { return }
+
+    guard tdoc.get("uri") is Some(juri) else { return }
+    guard juri is Str(uri) else { return }
+
+    guard tdoc.get("languageId") is Some(jlangid) else { return }
+    guard jlangid is Str(language_id) else { return }
+    guard language_id == "jakt" else { return } 
+
+    guard tdoc.get("version") is Some(jversion) else { return }
+    guard jversion is Num(nversion) else { return }
+    guard nversion is Integer(version) else { return }
+
+    guard tdoc.get("text") is Some(jtext) else { return }
+    guard jtext is Str(text) else { return }
+
+    log.log(format("Opened {}", uri))
+
+    let td = TextDocument(version, text, uri)
+
+
+    // TODO: update compiler on file
+    state.textDocument.opened_uris.set(uri, td)
 }
 
 
@@ -149,7 +220,6 @@ fn dump_server_capabilities(anon out: &mut StringBuilder) {
     eprintln("current build: {:#}", out.to_string())
 
     dump_key("capabilities", out, is_first: true)
-
 
     {
         out.append(b'{')

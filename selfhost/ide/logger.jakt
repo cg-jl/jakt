@@ -35,7 +35,7 @@ class LogFile {
 
 
     public fn create_log_file(filename: String) throws -> raw FILE {
-        let fp = fopen(filename.c_string(), "w".c_string())
+        let fp = fopen(filename.c_string(), "wb".c_string())
         if fp == null<raw FILE>() {
             // TODO: this should be an errno code, that we can
             // get from Windows/libc. Must check how Jakttest

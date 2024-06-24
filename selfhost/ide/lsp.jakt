@@ -1,4 +1,8 @@
-import compiler { Compiler }
+import compiler { Compiler, FileId }
+import parser { ParsedNamespace, Parser }
+import lexer { Lexer }
+import typechecker { Typechecker }
+import jakt::path { Path }
 import ide::logger { LogFile, Log }
 import ide::reader as jsonrpc
 import ide::message { Event, Dump, MessageId, ErrorCode, send_simple_error, send_response, dump_key_value, dump_key, dump_string }
@@ -12,11 +16,14 @@ struct LspState {
     // TODO: if the parent process is not alive then the server should exit
     // its process. Should we poll?
     parent_process: i32? = None
+    typechecker: Typechecker? = None
     textDocument: TextDocumentState = TextDocumentState()
+    compiler: Compiler
 }
 
 struct TextDocumentState {
     opened_uris: [String:TextDocument] = [:]
+    parsed_namespaces: [FileId:ParsedNamespace] = [:]
 }
 
 
@@ -36,7 +43,7 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
 
     lsplog.log("Listening on stdin")
 
-    mut state = LspState()
+    mut state = LspState(compiler)
 
     while not state.exit_requested {
         lsplog.log("Awaiting next message")
@@ -48,9 +55,8 @@ fn lsp_server(compiler: Compiler) throws -> c_int {
 
         let event = try Event::deserialize(message) catch err {
             lsplog.log(format("Error deserializing event: {}", err))
-            // do not send parse error back; since notifications also exist
-            // and we're skipping them.
-            // send_simple_error(id: MessageId::Int(0), code: -32700)
+            // TODO: $/logTrace in case it's initialized; also window/logMesssage
+            // or whatever ols sends may be a good idea.
             continue
         }
 
@@ -100,6 +106,17 @@ fn handle_event(event: Event, toplevel: [String:JsonValue], lsplog: &Log, state:
                         guard jparams is Obj(params) else { return }
                         did_close(params, state, &lsplog)
                     }
+                    "textDocument/willSave" => {
+                        guard toplevel.get("params") is Some(jparams) else { return }
+                        guard jparams is Obj(params) else { return }
+                        will_save(params, state, &lsplog)
+                    }
+                    "textDocument/didChange" => {
+                        guard toplevel.get("params") is Some(jparams) else { return }
+                        guard jparams is Obj(params) else { return }
+                        did_change(params, state, &lsplog)
+                    }
+                    // TODO: diagnostics
                     else => {}
                 }
             }
@@ -108,11 +125,78 @@ fn handle_event(event: Event, toplevel: [String:JsonValue], lsplog: &Log, state:
     }
 }
 
-struct TextDocument {
-    version: i64
-    text: String
-    uri: String
-    // TODO: get file id from compiler
+// NOTE: will be using a class so it's easier to mutate
+// from a dictionary entry.
+class TextDocument {
+    public version: i64
+    public text: [u8]
+    public uri: String
+    public file_id: FileId
+    public already_saved: bool = false
+}
+
+fn did_change(params: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
+    let log = lsplog.sub(name: "textDocument/didChange")
+
+    guard params.get("textDocument") is Some(jtdoc) else { return }
+    guard jtdoc is Obj(tdoc) else { return }
+    guard tdoc.get("uri") is Some(juri) else { return } 
+    guard juri is Str(uri) else { return }
+    guard tdoc.get("version") is Some(jversion) else { return }
+    guard jversion is Num(nversion) else { return }
+    guard nversion is Integer(version) else { return }
+
+    guard state.textDocument.opened_uris.get(uri) is Some(doc) else {
+        // TODO: $/logTrace, window/logMessage
+        log.log(format("{} not opened but got change for it"))
+        return
+    }
+
+
+    // Only register the latest versions of things
+    guard version > doc.version else { return }
+
+    log.log(format("{} changed {} -> {}", uri, doc.version, version))
+
+    mut mdoc = doc
+    mdoc.version = version
+    // Make sure that we don't save this version
+    mdoc.already_saved = false
+}
+
+fn will_save(params: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
+    let log = lsplog.sub(name: "textDocument/willSave")
+
+    guard params.get("textDocument") is Some(jtdoc) else { return }
+    guard jtdoc is Obj(tdoc) else { return }
+    guard tdoc.get("uri") is Some(juri) else { return }
+    guard juri is Str(uri) else { return }
+
+    guard state.textDocument.opened_uris.get(uri) is Some(doc) else { 
+        eprintln("Saved file {} but it was not registered", uri)
+        return
+    }
+
+    guard not doc.already_saved else { return }
+
+    // NOTE: explicitly not checking the reason since we don't care about it.
+    // Maybe we could ignore delayed saves since we want the user to be in control
+    // of when this beast will be doing work.
+
+    // Kick the compiler into action
+    // TODO: progress state or notification (also check if supported)
+    // $/logTrace, window/logMessage
+
+    state.compiler.restore_file_state((doc.file_id, doc.text))
+
+    let tokens = Lexer::lex(compiler: state.compiler)
+
+    let parsed_namespace = Parser::parse(compiler: state.compiler, tokens)
+
+    state.textDocument.parsed_namespaces.set(doc.file_id, parsed_namespace)
+    // TODO: typechecker work
+
+    log.log(format("saved {} version {}", doc.uri, doc.version))
 }
 
 fn did_close(params: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
@@ -125,6 +209,15 @@ fn did_close(params: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
     guard juri is Str(uri) else { return }
 
     log.log(format("Closed {}", uri))
+
+    guard state.textDocument.opened_uris.get(uri) is Some(doc) else {
+        // TODO: report error via window/logMessage
+        // TODO: $/logTrace
+        eprintln("closed document that was not registered")
+        return
+    }
+
+    state.textDocument.parsed_namespaces.remove(doc.file_id)
 
     // unregister that file.
     state.textDocument.opened_uris.remove(uri)
@@ -155,9 +248,26 @@ fn did_open(toplevel: [String:JsonValue], state: &mut LspState, lsplog: &Log) {
     guard tdoc.get("text") is Some(jtext) else { return }
     guard jtext is Str(text) else { return }
 
+    guard state.textDocument.opened_uris.get(uri) is None else {
+        // TODO: error to the JSON channel too?
+        eprintln("Opening file that was already opened: {}", uri)
+        return
+    }
+
+    // NOTE: not really a path, w/e
+    let file_id = state.compiler.get_file_id_or_register(Path::from_string(uri))
+
+    mut text_bytes: [u8] = []
+
+    text_bytes.ensure_capacity(text.length())
+
+    for i in 0..text.length() {
+        text_bytes.push(text.byte_at(i))
+    }
+
     log.log(format("Opened {}", uri))
 
-    let td = TextDocument(version, text, uri)
+    let td = TextDocument(version, text: text_bytes, uri, file_id)
 
 
     // TODO: update compiler on file
@@ -196,6 +306,12 @@ fn initialize(id: &MessageId, toplevel: [String:JsonValue], state: &mut LspState
         }
     }
 
+    // TODO: general:positionEncodings is UTF-16 under Windows.
+    // Make sure we can convert those positions to equivalent UTF-8 positions.
+
+    // TODO: check if client capabilities supports willSave.
+    // We can't yet afford to check on every keystroke.
+
     // TODO: workspace folders
     // TODO: client capabilities
 
@@ -217,8 +333,6 @@ fn dump_server_capabilities(anon out: &mut StringBuilder) {
 
     defer out.append(b'}')
 
-    eprintln("current build: {:#}", out.to_string())
-
     dump_key("capabilities", out, is_first: true)
 
     {
@@ -231,8 +345,20 @@ fn dump_server_capabilities(anon out: &mut StringBuilder) {
             out.append(b'{')
             defer out.append(b'}')
 
-            // Notify on open/close
+            // Notify on open/close. This way we can register files
+            // in and out. May be able to manage more resources if required.
             dump_key_value("openClose", &true, out, is_first: true)
+
+            // Notify on save file. We will use this as a trigger to launch the
+            // lexer/parser/typechecker pipeline. We currently don't have
+            // enough power/caching to enable the pipeline on change.
+            dump_key_value("willSave", &true, out)
+
+            // send incremental changes. We aren't going
+            // to process the changes themselves, we will use them
+            // to flag files as dirty. Incremental changes so that
+            // I/O bandwidth is reduced.
+            dump_key_value("changes", &2i32, out)
         }
     }
 }

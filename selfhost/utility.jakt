@@ -123,8 +123,13 @@ struct Span {
     fn is_in_offset_range(this, start: usize, end: usize) -> bool => start <= .start and end >= .end
 }
 
-struct FileId {
+struct FileId implements(Hashable, Equal<FileId>) {
     id: usize
+
+    [[inline(make_available)]]
+    fn hash(this) -> u32 {
+        return .id.hash()
+    }
 
     fn equals(this, anon rhs: FileId) -> bool {
         return .id == rhs.id

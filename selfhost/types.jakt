@@ -2111,8 +2111,8 @@ class CheckedProgram {
         var: String
         ignore_mixin_scopes: bool = false
         root_scope: ScopeId? = None
-    ) throws -> CheckedVariable? {
-        return .for_each_scope_accessible_unqualified_from_scope(
+    ) -> CheckedVariable? {
+        return must .for_each_scope_accessible_unqualified_from_scope(
             scope_id
             &fn[var, this](mixin: ResolutionMixin, name_override: String?, is_alias: bool) throws -> IterationDecision<CheckedVariable> {
                 if not mixin.mixin_vars {
@@ -2266,7 +2266,7 @@ class CheckedProgram {
         return .is_integer(type_id) or .is_floating(type_id)
     }
 
-    public fn is_string(this, anon type_id: TypeId) throws -> bool => match .get_type(type_id) {
+    public fn is_string(this, anon type_id: TypeId) -> bool => match .get_type(type_id) {
         JaktString => true
         Struct(struct_id) => .find_struct_in_prelude("String").equals(struct_id)
         else => false
@@ -2489,8 +2489,8 @@ class CheckedProgram {
         name: String
         ignore_mixin_scopes: bool = false
         root_scope: ScopeId? = None
-    ) throws -> StructId? {
-        return .for_each_scope_accessible_unqualified_from_scope(
+    ) -> StructId? {
+        return must .for_each_scope_accessible_unqualified_from_scope(
             scope_id
             &fn[name, this](mixin: ResolutionMixin, name_override: String?, is_alias: bool) throws -> IterationDecision<StructId> {
                 if not mixin.mixin_structs {
@@ -2510,7 +2510,7 @@ class CheckedProgram {
         )
     }
 
-    public fn find_struct_in_prelude(this, anon name: String) throws -> StructId {
+    public fn find_struct_in_prelude(this, anon name: String) -> StructId {
         // start at the prelude scope id
         let scope_id = .prelude_scope_id()
         let struct_id = .find_struct_in_scope(scope_id, name, ignore_mixin_scopes: true)
@@ -2673,7 +2673,7 @@ class CheckedProgram {
         function_name: String
         ignore_mixin_scopes: bool = false
         root_scope: ScopeId? = None
-    ) throws -> [FunctionId]? {
+    ) -> [FunctionId]? {
         return .find_scoped_functions_with_name_in_scope(parent_scope_id, function_name, ignore_mixin_scopes, root_scope)?.0
     }
 
@@ -2683,10 +2683,10 @@ class CheckedProgram {
         function_name: String
         ignore_mixin_scopes: bool = false
         root_scope: ScopeId? = None
-    ) throws -> ([FunctionId], ScopeId)? {
+    ) -> ([FunctionId], ScopeId)? {
         mut result_ids: [FunctionId] = []
         mut result_scope: ScopeId? = None
-        .for_each_scope_accessible_unqualified_from_scope(
+        must .for_each_scope_accessible_unqualified_from_scope(
             scope_id: parent_scope_id
             &fn[function_name, &mut result_ids, &mut result_scope, this](
                 mixin: ResolutionMixin
@@ -2722,7 +2722,7 @@ class CheckedProgram {
     // Checks given struct id is weak ptr and
     //  validates args are compatible with weak ptr type
     // Returns the inner struct id if given struct is weak ptr
-    public fn check_and_extract_weak_ptr(this, struct_id: StructId, args: [TypeId]) throws -> StructId? {
+    public fn check_and_extract_weak_ptr(this, struct_id: StructId, args: [TypeId]) -> StructId? {
         let weak_ptr_struct_id = .find_struct_in_prelude("WeakPtr")
 
         if struct_id.equals(weak_ptr_struct_id) {

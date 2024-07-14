@@ -81,7 +81,7 @@ struct ControlFlowState {
     }
 
     // apply control flow macro to a match, from outside its scope
-    fn apply_control_flow_macro(this, anon x: String, func_return_type: TypeId, func_can_throw: bool) -> String {
+    fn apply_control_flow_macro_wasteful(this, anon x: String, func_return_type: TypeId, func_can_throw: bool) -> String {
         let handle_loop_controls = match are_loop_exits_allowed(.allowed_exits) {
             // Not inside a loop, so the inner match better not yield those
             // values, since there's no one that can catch them.
@@ -234,7 +234,7 @@ struct CodeGenerator {
 
     // `forward_error_with_try` controls whether errors are handled through the TRY() macro or through an external mechanism put by the caller.
     // noreturn functions may not throw, so let them crash instead.
-    fn current_error_handler(this, forward_error_with_try: bool = true) -> String {
+    fn current_error_handler_wasteful(this, forward_error_with_try: bool = true) -> String {
         if .inside_defer or (
             .current_function.has_value() and
             .current_function!.return_type_id == never_type_id() and
@@ -632,7 +632,7 @@ struct CodeGenerator {
 
                 let name = unprefixed_name.last()!.name
 
-                let qualifier = generator.codegen_namespace_qualifier(scope_id: generator.program.find_type_scope_id(type_id), is_prelude: generator.program.get_module(type_id.module).is_prelude())
+                let qualifier = generator.codegen_namespace_qualifier_wasteful(scope_id: generator.program.find_type_scope_id(type_id), is_prelude: generator.program.get_module(type_id.module).is_prelude())
                 cpp_code.appendff("using {} = {}{};", name, qualifier, name)
 
                 if should_be_namespaced {
@@ -923,7 +923,7 @@ struct CodeGenerator {
         } else if is_full_respecialization {
             mut args: [String] = []
             for arg in function.generics.specializations[function.specialization_index!] {
-                args.push(.codegen_type(arg))
+                args.push(.codegen_type_wasteful(arg))
             }
 
             output.appendff(
@@ -938,14 +938,14 @@ struct CodeGenerator {
             }
 
             output.append(match function.can_throw {
-                true => format("ErrorOr<{}>", .codegen_type(function.return_type_id))
-                false => .codegen_type(function.return_type_id)
+                true => format("ErrorOr<{}>", .codegen_type_wasteful(function.return_type_id))
+                false => .codegen_type_wasteful(function.return_type_id)
             })
 
             output.append(" ")
 
             let qualifier = match containing_struct.has_value() {
-                true => .codegen_type_possibly_as_namespace(type_id: containing_struct!, as_namespace: true)
+                true => .codegen_type_possibly_as_namespace_wasteful(type_id: containing_struct!, as_namespace: true)
                 false => ""
             }
             if not qualifier.is_empty() {
@@ -962,7 +962,7 @@ struct CodeGenerator {
                 } else {
                     output.append(", ")
                 }
-                output.append(.codegen_type(type_id))
+                output.append(.codegen_type_wasteful(type_id))
             }
 
             output.append(">(")
@@ -979,7 +979,7 @@ struct CodeGenerator {
                     first = false
                 }
                 let variable_type = .program.get_type(variable.type_id)
-                output.append(.codegen_type(variable.type_id))
+                output.append(.codegen_type_wasteful(variable.type_id))
                 output.append(" ")
                 if not variable.is_mutable and not (variable_type is Reference or variable_type is MutableReference) {
                     output.append("const ")
@@ -1514,7 +1514,7 @@ struct CodeGenerator {
             } else {
                 output.append("typename ")
             }
-            let name = .codegen_type(id)
+            let name = .codegen_type_wasteful(id)
 
             output.append(name)
             names.push(name)
@@ -1579,7 +1579,7 @@ struct CodeGenerator {
             }
 
             if not function.type is Destructor and not function.type is Constructor {
-                let naked_return_type = .codegen_type(function.return_type_id)
+                let naked_return_type = .codegen_type_wasteful(function.return_type_id)
                 let return_type = match function.can_throw {
                     true => format("ErrorOr<{}>", naked_return_type)
                     false => naked_return_type
@@ -1605,7 +1605,7 @@ struct CodeGenerator {
             }
 
             let param_type = .program.get_type(param.variable.type_id)
-            output.append(.codegen_type(param.variable.type_id))
+            output.append(.codegen_type_wasteful(param.variable.type_id))
             output.append(" ")
             if not param.variable.is_mutable and not (param_type is Reference or param_type is MutableReference) {
                 output.append("const ")
@@ -1684,7 +1684,7 @@ struct CodeGenerator {
                         class_name_with_generics += "<"
                         first = false
                     }
-                    class_name_with_generics += .codegen_type(generic_parameter.type_id)
+                    class_name_with_generics += .codegen_type_wasteful(generic_parameter.type_id)
                 }
                 if not struct_.generic_parameters.is_empty() {
                     class_name_with_generics += ">"
@@ -1692,7 +1692,7 @@ struct CodeGenerator {
 
                 output.appendff("class {} :", struct_.name_for_codegen().as_name_for_definition())
                 if struct_.super_struct_id.has_value() {
-                    output.appendff("public {}", .codegen_struct_type(id: struct_.super_struct_id!, as_namespace: true))
+                    output.appendff("public {}", .codegen_struct_type_wasteful(id: struct_.super_struct_id!, as_namespace: true))
                     if not (.program.get_struct(struct_.super_struct_id!).record_type is Class) {
                         output.appendff(
                             ", public RefCounted<{}>, public Weakable<{}>"
@@ -1728,7 +1728,7 @@ struct CodeGenerator {
             Struct => {
                 output.appendff("struct {}", struct_.name_for_codegen().as_name_for_definition())
                 if struct_.super_struct_id.has_value() {
-                    output.appendff(": public {}", .codegen_struct_type(id: struct_.super_struct_id!, as_namespace: true))
+                    output.appendff(": public {}", .codegen_struct_type_wasteful(id: struct_.super_struct_id!, as_namespace: true))
                 }
                 output.append(" {\n")
                 output.append("  public:\n")
@@ -1754,7 +1754,7 @@ struct CodeGenerator {
         for field in struct_.fields {
             let variable = .program.get_variable(field.variable_id)
             set_access_level(variable.visibility)
-            output.append(.codegen_type(variable.type_id))
+            output.append(.codegen_type_wasteful(variable.type_id))
             output.append(" ")
             output.append(variable.name_for_codegen().as_name_for_definition())
             output.append(";")
@@ -1772,7 +1772,7 @@ struct CodeGenerator {
 
                 if function.type is Destructor {
                     if struct_.generic_parameters.is_empty() {
-                        output.append(.codegen_destructor_predecl(&struct_))
+                        output.append(.codegen_destructor_predecl_wasteful(&struct_))
                     } else {
                         .codegen_destructor(&struct_, &function, is_inline: true, &mut output)
                     }
@@ -1820,7 +1820,7 @@ struct CodeGenerator {
     ) {
         if enum_.underlying_type_id != void_type_id() {
             if .program.is_integer(enum_.underlying_type_id) {
-                output.appendff("enum class {}: {};", enum_.name, .codegen_type(enum_.underlying_type_id))
+                output.appendff("enum class {}: {};", enum_.name, .codegen_type_wasteful(enum_.underlying_type_id))
                 return
             } else {
                 todo("Enums with a non-integer underlying type")
@@ -1840,7 +1840,7 @@ struct CodeGenerator {
     fn codegen_enum(mut this, enum_: CheckedEnum, output: &mut StringBuilder) {
         if enum_.underlying_type_id != void_type_id() {
             if .program.is_integer(enum_.underlying_type_id) {
-                output.appendff("enum class {} : {} {{\n", enum_.name, .codegen_type(enum_.underlying_type_id))
+                output.appendff("enum class {} : {} {{\n", enum_.name, .codegen_type_wasteful(enum_.underlying_type_id))
                 for variant in enum_.variants {
                     guard variant is WithValue(name, expr) else {
                         todo(format("codegen_enum can't generate variant: {}", variant))
@@ -2008,7 +2008,7 @@ struct CodeGenerator {
                     variant_fields
                     common_fields
                     is_inline: true
-                    ctor_result_type: enum_constructor_result_type(enum_)
+                    ctor_result_type: enum_constructor_result_type_wasteful(enum_)
                     &mut output
                 )
                 output.append(";\n")
@@ -2061,8 +2061,8 @@ struct CodeGenerator {
     fn codegen_enum_constructor_decl(
         enum_name: String
         variant_name: String
-        variant_fields: [(String, String)] // field_name, .codegen_type(field_type)
-        common_fields: [(String, String)] // field_name, .codegen_type(field_type)
+        variant_fields: [(String, String)] // field_name, .codegen_type_wasteful(field_type)
+        common_fields: [(String, String)] // field_name, .codegen_type_wasteful(field_type)
         is_inline: bool // whether it's an inline definition (inside of the `struct`) or out-of-line one.
         ctor_result_type: String
         output: &mut StringBuilder
@@ -2102,7 +2102,7 @@ struct CodeGenerator {
         output.append(")")
     }
 
-    fn codegen_for_enum_variants(this, anon enum_: &CheckedEnum, anon stmt_fmt: &fn(anon accessor: String) -> String, index_expr: String, builder: &mut StringBuilder) {
+    fn codegen_for_enum_variants_wasteful(this, anon enum_: &CheckedEnum, anon stmt_fmt: &fn(anon accessor: String) -> String, index_expr: String, builder: &mut StringBuilder) {
         // Adding to output here in a loop was causing a 30% slowdown, so using
         // a StringBuilder to mitigate it.
         builder.appendff("switch ({}) {{\n", index_expr)
@@ -2138,7 +2138,7 @@ struct CodeGenerator {
     /// Generates the body for a copy/ move assignment operator/constructor.
     ///
     /// Assumes that the argument is named "rhs".
-    fn codegen_enum_assignment_body(
+    fn codegen_enum_assignment_body_wasteful(
         this
         enum_: CheckedEnum
         is_constructor: bool // whether it's a constructor. If false, it's an assignment operator.
@@ -2192,7 +2192,7 @@ struct CodeGenerator {
 
         if is_constructor {
             // In a constructor, everything needs placement new since it's uninitialized.
-            .codegen_for_enum_variants(&enum_, &placement_new, index_expr: "rhs.__jakt_init_index()", &mut builder)
+            .codegen_for_enum_variants_wasteful(&enum_, &placement_new, index_expr: "rhs.__jakt_init_index()", &mut builder)
         } else {
             // If it's not the same thing, the only safe thing here is to call the destructor
             // and use placement_new.
@@ -2205,14 +2205,14 @@ struct CodeGenerator {
             builder.append("if (this->__jakt_variant_index != rhs.__jakt_variant_index) {\n")
             builder.append("this->__jakt_destroy_variant();\n")
 
-            .codegen_for_enum_variants(&enum_, &placement_new, index_expr: "rhs.__jakt_init_index()", &mut builder)
+            .codegen_for_enum_variants_wasteful(&enum_, &placement_new, index_expr: "rhs.__jakt_init_index()", &mut builder)
 
             builder.append("} else {\n")
 
             // Here we can use assignment for all of the fields, since we know for sure
             // they have been initialized.
 
-            .codegen_for_enum_variants(&enum_, &assign, index_expr: "rhs.__jakt_init_index()", &mut builder)
+            .codegen_for_enum_variants_wasteful(&enum_, &assign, index_expr: "rhs.__jakt_init_index()", &mut builder)
 
             builder.append("}\n")
         }
@@ -2228,13 +2228,13 @@ struct CodeGenerator {
         enum_: CheckedEnum
         is_inside_struct: bool
         generic_parameter_list: String? // Must be Some if enum is generic.
-        variant_field_list: [(String, [(String, String)])] // variant_name, [(field_name, .codegen_type(field_type)]
+        variant_field_list: [(String, [(String, String)])] // variant_name, [(field_name, .codegen_type_wasteful(field_type)]
         common_fields: [(String, String)]
         output: &mut StringBuilder
     ) {
         let is_generic = not enum_.generic_parameters.is_empty()
 
-        let ctor_result_type = enum_constructor_result_type(enum_, generic_parameter_list)
+        let ctor_result_type = enum_constructor_result_type_wasteful(enum_, generic_parameter_list)
 
         let ctor_type = match is_generic {
             true => format("{}<{}>", enum_.name, generic_parameter_list)
@@ -2312,7 +2312,7 @@ struct CodeGenerator {
             output.appendff("{0}& {0}::operator=({0} const &rhs)", enum_.name)
         }
         output.append("{\n")
-        output.append(.codegen_enum_assignment_body(enum_,is_constructor: false use_move: false))
+        output.append(.codegen_enum_assignment_body_wasteful(enum_,is_constructor: false use_move: false))
         output.append("return *this;\n")
         output.append("}\n")
 
@@ -2322,7 +2322,7 @@ struct CodeGenerator {
         } else {
             output.appendff("{0}::{0}({0} const &rhs)", enum_.name)
         }
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: true, use_move: false))
+        output.append(.codegen_enum_assignment_body_wasteful(enum_, is_constructor: true, use_move: false))
 
         // Move assignment operator
         if is_inside_struct {
@@ -2331,7 +2331,7 @@ struct CodeGenerator {
             output.appendff("{0}& {0}::operator=({0} &&rhs)", enum_.name)
         }
         output.append("{\n")
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: false, use_move: true))
+        output.append(.codegen_enum_assignment_body_wasteful(enum_, is_constructor: false, use_move: true))
         output.append("return *this;\n")
         output.append("}\n")
 
@@ -2342,7 +2342,7 @@ struct CodeGenerator {
             output.appendff("{0}::{0}({0} &&rhs)", enum_.name)
         }
         output.append("{\n")
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: true, use_move: true))
+        output.append(.codegen_enum_assignment_body_wasteful(enum_, is_constructor: true, use_move: true))
         output.append("}\n")
     }
 
@@ -2352,7 +2352,7 @@ struct CodeGenerator {
         for field in enum_.fields {
             let variable = .program.get_variable(field.variable_id)
             let name = variable.name_for_codegen().as_name_for_definition()
-            common_fields.push((name, .codegen_type(variable.type_id)))
+            common_fields.push((name, .codegen_type_wasteful(variable.type_id)))
             common_field_names.add(name)
         }
 
@@ -2367,7 +2367,7 @@ struct CodeGenerator {
                     for field in own_fields {
                         let variable = .program.get_variable(field)
                         if not common_field_names.contains(variable.name) {
-                            fields.push((variable.name_for_codegen().as_name_for_definition(), .codegen_type(variable.type_id)))
+                            fields.push((variable.name_for_codegen().as_name_for_definition(), .codegen_type_wasteful(variable.type_id)))
                         }
                     }
 
@@ -2375,7 +2375,7 @@ struct CodeGenerator {
                 }
                 Typed(name, type_id) => {
                     mut fields: [(String, String)] = []
-                    fields.push(("value", .codegen_type(type_id)))
+                    fields.push(("value", .codegen_type_wasteful(type_id)))
 
                     yield fields
                 }
@@ -2390,7 +2390,7 @@ struct CodeGenerator {
         return (common_fields, variant_field_list)
     }
 
-    fn destructor_name(this, anon id: TypeId) -> String? => match .program.get_type(id) {
+    fn destructor_name_wasteful(this, anon id: TypeId) -> String? => match .program.get_type(id) {
         JaktString => "ByteString"
         GenericInstance(id) | GenericResolvedType(id) | Struct(id) => {
             let struct_ = .program.get_struct(id)
@@ -2410,7 +2410,7 @@ struct CodeGenerator {
         else => None
     }
 
-    fn enum_constructor_result_type(enum_: CheckedEnum, generic_parameter_list: String? = None) -> String {
+    fn enum_constructor_result_type_wasteful(enum_: CheckedEnum, generic_parameter_list: String? = None) -> String {
         mut result = enum_.name
         if not enum_.generic_parameters.is_empty() {
             result += format("<{}>", generic_parameter_list!)
@@ -2439,7 +2439,7 @@ struct CodeGenerator {
             match variant {
                 Untyped | WithValue => {}
                 Typed(type_id) => {
-                    let ds_name = .destructor_name(type_id)
+                    let ds_name = .destructor_name_wasteful(type_id)
                     if ds_name is Some(name) {
                         output.appendff("this->as.{}.value.~{}();\n", variant_name, name)
                     }
@@ -2448,7 +2448,7 @@ struct CodeGenerator {
                     for field in fields[common_field_count..] {
                         let variable = .program.get_variable(field)
 
-                        let ds: String? = .destructor_name(variable.type_id)
+                        let ds: String? = .destructor_name_wasteful(variable.type_id)
 
                         if ds is Some(name) {
                             output.appendff("this->as.{}.{}.~{}();\n",
@@ -2477,7 +2477,7 @@ struct CodeGenerator {
 
         for common_field in enum_.fields {
             let variable = .program.get_variable(common_field.variable_id)
-            let ds: String? = .destructor_name(variable.type_id)
+            let ds: String? = .destructor_name_wasteful(variable.type_id)
             if ds is Some(name) {
                 output.appendff("this->common.init_common.{}.~{}();\n", variable.name_for_codegen().as_name_for_use(), name)
             }
@@ -2500,7 +2500,7 @@ struct CodeGenerator {
 
         output.append("ByteString ")
         if not is_inline {
-            output.append(.codegen_type_possibly_as_namespace(type_id: struct_.type_id, as_namespace: true))
+            output.append(.codegen_type_possibly_as_namespace_wasteful(type_id: struct_.type_id, as_namespace: true))
             output.append("::")
         }
         output.append("debug_description() const { ")
@@ -2556,7 +2556,7 @@ struct CodeGenerator {
 
         output.append("ByteString ")
         if not is_inline {
-            output.append(.codegen_type_possibly_as_namespace(type_id: enum_.type_id, as_namespace: true))
+            output.append(.codegen_type_possibly_as_namespace_wasteful(type_id: enum_.type_id, as_namespace: true))
             output.append("::")
         }
         output.append("debug_description() const {\n")
@@ -2688,10 +2688,10 @@ struct CodeGenerator {
                     }
                 }
                 output.append("(")
-                output.append(.codegen_type(type_id))
+                output.append(.codegen_type_wasteful(type_id))
                 output.append("{")
                 output.append("static_cast<")
-                output.append(.codegen_type(index_type))
+                output.append(.codegen_type_wasteful(index_type))
                 output.append(">(")
                 if from.has_value() {
                     .codegen_expression(from!, &mut output)
@@ -2699,7 +2699,7 @@ struct CodeGenerator {
                     output.append("0LL")
                 }
                 output.append("),static_cast<")
-                output.append(.codegen_type(index_type))
+                output.append(.codegen_type_wasteful(index_type))
                 output.append(">(")
                 if to.has_value() {
                     .codegen_expression(to!, &mut output)
@@ -2713,7 +2713,7 @@ struct CodeGenerator {
             }
             OptionalSome(expr, type_id) => {
                 output.append("static_cast<")
-                output.append(.codegen_type(type_id))
+                output.append(.codegen_type_wasteful(type_id))
                 output.append(">(")
                 .codegen_expression(expr, &mut output)
                 output.append(")")
@@ -2740,11 +2740,11 @@ struct CodeGenerator {
                     }
 
                     let name = .program.get_function(ids![0]).name_for_codegen().as_name_for_use()
-                    let error_handler = match val.may_throw { true => .current_error_handler(forward_error_with_try), else => "" }
+                    let error_handler = match val.may_throw { true => .current_error_handler_wasteful(forward_error_with_try), else => "" }
                     output.appendff(
                         "{}({}::{}(\"{}\"sv))"
                         error_handler
-                        .codegen_type(val.type_id)
+                        .codegen_type_wasteful(val.type_id)
                         name
                         escaped_value
                     )
@@ -2909,8 +2909,8 @@ struct CodeGenerator {
                     }
                     // FIXME: Remove this once we have proper type mutability support
                     RawAddress => match .program.get_type(expr.type()).is_boxed(program: .program) {
-                        true => "const_cast<" + .codegen_type_possibly_as_namespace(type_id, as_namespace: true) + ">(" + "&*"
-                        false => "const_cast<" + .codegen_type(type_id) + ">(" + "&"
+                        true => "const_cast<" + .codegen_type_possibly_as_namespace_wasteful(type_id, as_namespace: true) + ">(" + "&*"
+                        false => "const_cast<" + .codegen_type_wasteful(type_id) + ">(" + "&"
                     }
                     LogicalNot => "!"
                     BitwiseNot => "~"
@@ -2919,9 +2919,9 @@ struct CodeGenerator {
                         let is_type = match .program.get_type(type_id) {
                             Struct(id) => {
                                 let struct_ = .program.get_struct(id)
-                                yield .codegen_namespace_qualifier(scope_id: struct_.scope_id, is_prelude: .program.get_module(id.module).is_prelude()) + struct_.name_for_codegen().as_name_for_use()
+                                yield .codegen_namespace_qualifier_wasteful(scope_id: struct_.scope_id, is_prelude: .program.get_module(id.module).is_prelude()) + struct_.name_for_codegen().as_name_for_use()
                             }
-                            else => .codegen_type(type_id)
+                            else => .codegen_type_wasteful(type_id)
                         }
                         yield "is<" + is_type + ">("
                     }
@@ -2974,14 +2974,14 @@ struct CodeGenerator {
                             }
                             Identity => "static_cast"
                         }
-                        yield cast_type + "<" + .codegen_type(final_type_id) + ">("
+                        yield cast_type + "<" + .codegen_type_wasteful(final_type_id) + ">("
                     }
                     else => ""
                 })
                 output.append("(")
                 mut object_builder = StringBuilder::create()
                 if op is Sizeof(type_id) {
-                    object_builder.append(.codegen_type(type_id))
+                    object_builder.append(.codegen_type_wasteful(type_id))
                 } else {
                     .codegen_expression(expr, output: &mut object_builder)
                 }
@@ -3028,7 +3028,7 @@ struct CodeGenerator {
                                 output.appendff("__jakt_init_index() == {} /* {} */", variant_index, name)
                             }
                             ValueEnum => {
-                                output.appendff("== {}{}::{}", .codegen_namespace_qualifier(scope_id: enum_.scope_id, is_prelude: .program.get_module(enum_id.module).is_prelude()), enum_.name, name)
+                                output.appendff("== {}{}::{}", .codegen_namespace_qualifier_wasteful(scope_id: enum_.scope_id, is_prelude: .program.get_module(enum_id.module).is_prelude()), enum_.name, name)
                             }
                             else => {
                                 panic(format("Unexpected enum record type in IsEnumVariant: {}", enum_.record_type))
@@ -3059,7 +3059,7 @@ struct CodeGenerator {
 
                 let type_name = match val {
                     USize => "size_t"
-                    else => .codegen_type(type_id)
+                    else => .codegen_type_wasteful(type_id)
                 }
 
                 output.append(match val {
@@ -3080,7 +3080,7 @@ struct CodeGenerator {
             NamespacedVar(namespaces, var) => {
                 if var.name_for_codegen().is_scopable() {
                     if var.owner_scope.has_value() {
-                        output.append(.codegen_namespace_qualifier(
+                        output.append(.codegen_namespace_qualifier_wasteful(
                             scope_id: var.owner_scope!
                             is_prelude: false
                             skip_current: false
@@ -3137,7 +3137,7 @@ struct CodeGenerator {
                 if repeat.has_value() {
                     let repeat_val = repeat.value()
                     output.append("DynamicArray<")
-                    output.append(.codegen_type(inner_type_id))
+                    output.append(.codegen_type_wasteful(inner_type_id))
                     output.append(">::filled(")
                     .codegen_expression(repeat_val, &mut output)
                     output.append(", ")
@@ -3145,7 +3145,7 @@ struct CodeGenerator {
                     output.append(")")
                 } else {
                     output.append("DynamicArray<")
-                    output.append(.codegen_type(inner_type_id))
+                    output.append(.codegen_type_wasteful(inner_type_id))
                     output.append(">::create_with({")
                     mut first = true
                     for val in vals {
@@ -3162,8 +3162,8 @@ struct CodeGenerator {
             }
             JaktDictionary(vals, span, type_id, key_type_id, value_type_id) => {
                 output.appendff("Dictionary<{}, {}>::create_with_entries({{",
-                    .codegen_type(key_type_id),
-                    .codegen_type(value_type_id))
+                    .codegen_type_wasteful(key_type_id),
+                    .codegen_type_wasteful(value_type_id))
 
                 mut first = true
                 for (key, value) in vals {
@@ -3183,7 +3183,7 @@ struct CodeGenerator {
                 output.append("})")
             }
             JaktSet(vals, span, type_id, inner_type_id) => {
-                output.appendff("Set<{}>::create_with_values({{", .codegen_type(inner_type_id))
+                output.appendff("Set<{}>::create_with_values({{", .codegen_type_wasteful(inner_type_id))
                 mut first = true
                 for value in vals {
                     if not first {
@@ -3223,11 +3223,11 @@ struct CodeGenerator {
                 }
                 mut generated_params: [String] = []
                 for param in params {
-                    generated_params.push(format("{} {}", .codegen_type(param.variable.type_id), param.variable.name_for_codegen().as_name_for_definition()))
+                    generated_params.push(format("{} {}", .codegen_type_wasteful(param.variable.type_id), param.variable.name_for_codegen().as_name_for_definition()))
                 }
                 let return_type = match can_throw {
-                    true => format("ErrorOr<{}>", .codegen_type(return_type_id))
-                    false => .codegen_type(return_type_id)
+                    true => format("ErrorOr<{}>", .codegen_type_wasteful(return_type_id))
+                    false => .codegen_type_wasteful(return_type_id)
                 }
 
                 let last_control_flow = .control_flow_state
@@ -3263,7 +3263,7 @@ struct CodeGenerator {
                 let last_control_flow = .control_flow_state
                 if can_affect_loop {
                     .control_flow_state.indirectly_inside_try_block = true
-                    builder.append(format("[&]() -> JaktInternal::ExplicitValueOrControlFlow<ErrorOr<void>, {}> {{\n", .codegen_function_return_type(function: .current_function!)))
+                    builder.append(format("[&]() -> JaktInternal::ExplicitValueOrControlFlow<ErrorOr<void>, {}> {{\n", .codegen_function_return_type_wasteful(function: .current_function!)))
                 } else {
                     builder.append("auto ")
                     builder.append(try_var)
@@ -3285,7 +3285,7 @@ struct CodeGenerator {
                     output.append("auto ")
                     output.append(try_var)
                     output.append(" = ")
-                    output.append(.control_flow_state.apply_control_flow_macro(
+                    output.append(.control_flow_state.apply_control_flow_macro_wasteful(
                         builder.to_string()
                         func_return_type: .current_function!.return_type_id
                         func_can_throw: .current_function!.can_throw
@@ -3324,7 +3324,7 @@ struct CodeGenerator {
 
                 if not is_void {
                     output.append("({ Optional<")
-                    output.append(.codegen_type(inner_type_id))
+                    output.append(.codegen_type_wasteful(inner_type_id))
                     output.append("> ")
                     output.append(fresh_var)
                     output.append(";\n")
@@ -3333,7 +3333,7 @@ struct CodeGenerator {
                 output.append("auto ")
                 output.append(try_var)
                 output.append(" = [&]() -> ErrorOr<")
-                output.append(.codegen_type(inner_type_id))
+                output.append(.codegen_type_wasteful(inner_type_id))
                 output.append("> { return ")
                 // Since it's a return statement, we don't have to wrap the expression with TRY.
                 // Unless it's a "void expression", where we must use TRY() in order to propagate its
@@ -3413,7 +3413,7 @@ struct CodeGenerator {
                 // propagation for the expression codegen, instead of wrapping
                 // it inside an IIFE and a macro.
                 output.append("MUST(([&]() -> ErrorOr<")
-                output.append(.codegen_type(type_id))
+                output.append(.codegen_type_wasteful(type_id))
                 output.append("> { return ")
                 .codegen_expression(expr, &mut output)
                 output.append("; })())")
@@ -3436,7 +3436,7 @@ struct CodeGenerator {
         let last_control_flow = .control_flow_state
         .control_flow_state = .control_flow_state.enter_match()
 
-        let cpp_match_result_type = .codegen_type(type_id)
+        let cpp_match_result_type = .codegen_type_wasteful(type_id)
         let expr_type = .program.get_type(expr.type())
 
         let old_yield_method = .yield_method
@@ -3464,7 +3464,7 @@ struct CodeGenerator {
             )
         }
         .control_flow_state = last_control_flow
-        output.append(.control_flow_state.apply_control_flow_macro(
+        output.append(.control_flow_state.apply_control_flow_macro_wasteful(
             builder.to_string()
             func_return_type: .current_function!.return_type_id
             func_can_throw: .current_function!.can_throw
@@ -3498,7 +3498,7 @@ struct CodeGenerator {
         output.appendff(
             "([&]() -> JaktInternal::ExplicitValueOrControlFlow<{},{}> {{\n"
             cpp_match_result_type,
-            .codegen_function_return_type(function: .current_function!)
+            .codegen_function_return_type_wasteful(function: .current_function!)
         )
 
         if is_generic_enum {
@@ -3535,7 +3535,7 @@ struct CodeGenerator {
                     output.appendff("if (__jakt_enum_value.__jakt_init_index() == {} /* {} */) {{\n", variant_index, name)
 
                     mut variant_type_name = ""
-                    let qualifier = .codegen_type_possibly_as_namespace(type_id: subject_type_id, as_namespace: true)
+                    let qualifier = .codegen_type_possibly_as_namespace_wasteful(type_id: subject_type_id, as_namespace: true)
                     if not qualifier.is_empty() {
                         variant_type_name += "typename JaktInternal::RemoveRefPtr<"
                         variant_type_name += qualifier
@@ -3639,7 +3639,7 @@ struct CodeGenerator {
                     output.append("}\n")
                 }
                 ClassInstance(type, body, rebind_name, marker_span) => {
-                    let type_name = .codegen_type_possibly_as_namespace(type_id: type, as_namespace: true)
+                    let type_name = .codegen_type_possibly_as_namespace_wasteful(type_id: type, as_namespace: true)
                     output.appendff("if (is<{}>(__jakt_enum_value.ptr())) {{\n", type_name)
                     output.appendff(
                         "auto {} = NonnullRefPtr {{ *static_cast<RawPtr<{}>>(__jakt_enum_value.ptr()) }};\n"
@@ -3685,7 +3685,7 @@ struct CodeGenerator {
             output.append("([&]() -> JaktInternal::ExplicitValueOrControlFlow<")
             output.append(cpp_match_result_type)
             output.append(", ")
-            output.append(.codegen_function_return_type(function: .current_function!))
+            output.append(.codegen_function_return_type_wasteful(function: .current_function!))
             output.append(">{\n")
             output.append("auto&& __jakt_match_variant = ")
             if needs_deref {
@@ -3721,7 +3721,7 @@ struct CodeGenerator {
 
                                     let arg = args[0]
                                     let var = .program.find_var_in_scope(scope_id, var: arg.binding)!
-                                    output.append(.codegen_type(var.type_id))
+                                    output.append(.codegen_type_wasteful(var.type_id))
                                     if not var.is_mutable {
                                         output.append(" const")
                                     }
@@ -3738,7 +3738,7 @@ struct CodeGenerator {
 
                                     for arg in args {
                                         let var = .program.find_var_in_scope(scope_id, var: arg.binding)!
-                                        output.append(.codegen_type(var.type_id))
+                                        output.append(.codegen_type_wasteful(var.type_id))
                                         if not var.is_mutable {
                                             output.append(" const")
                                         }
@@ -3807,7 +3807,7 @@ struct CodeGenerator {
             output.append("([&]() -> JaktInternal::ExplicitValueOrControlFlow<")
             output.append(cpp_match_result_type)
             output.append(", ")
-            output.append(.codegen_function_return_type(function: .current_function!))
+            output.append(.codegen_function_return_type_wasteful(function: .current_function!))
             output.append(">{\n")
             output.append("switch (")
             .codegen_expression(expr, &mut output)
@@ -3871,11 +3871,11 @@ struct CodeGenerator {
         }
     }
 
-    fn codegen_function_return_type(mut this, function: CheckedFunction) -> String {
+    fn codegen_function_return_type_wasteful(mut this, function: CheckedFunction) -> String {
         if function.is_static() and function.name_for_codegen().as_name_for_use() == "main" {
             return "ErrorOr<int>"
         }
-        let type_name = .codegen_type(function.return_type_id)
+        let type_name = .codegen_type_wasteful(function.return_type_id)
         if function.can_throw {
             return format("ErrorOr<{}>", type_name)
         }
@@ -3915,7 +3915,7 @@ struct CodeGenerator {
             let rhs_can_throw = rhs.can_throw()
 
             if rhs_can_throw {
-                output.append(.current_error_handler())
+                output.append(.current_error_handler_wasteful())
                 output.append("((")
             }
 
@@ -3936,7 +3936,7 @@ struct CodeGenerator {
 
             if rhs_can_throw {
                 output.append("([&]() -> ErrorOr<")
-                output.append(.codegen_type(rhs_type_id))
+                output.append(.codegen_type_wasteful(rhs_type_id))
                 output.append("> { return ")
             } else {
                 output.append("([&] { return ")
@@ -4067,7 +4067,7 @@ struct CodeGenerator {
         output: &mut StringBuilder
     ) {
         output.append("static_cast<")
-        output.append(.codegen_type(type_id))
+        output.append(.codegen_type_wasteful(type_id))
         output.append(">(")
         .codegen_expression(lhs, &mut output)
         output.append(match op {
@@ -4106,7 +4106,7 @@ struct CodeGenerator {
         })
 
         output.append("<")
-        output.append(.codegen_type(type_id))
+        output.append(.codegen_type_wasteful(type_id))
         output.append(">(")
         .codegen_expression(lhs, &mut output)
         output.append(",")
@@ -4127,7 +4127,7 @@ struct CodeGenerator {
         .codegen_expression(lhs, &mut output)
         output.append(";")
         output.append("_jakt_ref = static_cast<")
-        output.append(.codegen_type(type_id))
+        output.append(.codegen_type_wasteful(type_id))
         output.append(">(_jakt_ref ")
         output.append(match op {
             AddAssign => " + "
@@ -4168,7 +4168,7 @@ struct CodeGenerator {
             }
         })
         output.append("<")
-        output.append(.codegen_type(type_id))
+        output.append(.codegen_type_wasteful(type_id))
         output.append(">(_jakt_ref, ")
         .codegen_expression(rhs, &mut output)
         output.append(");")
@@ -4184,7 +4184,7 @@ struct CodeGenerator {
         forward_error_with_try: bool = true
     ) {
         if call.callee_throws {
-            output.append(.current_error_handler(forward_error_with_try))
+            output.append(.current_error_handler_wasteful(forward_error_with_try))
             output.append("((")
         }
 
@@ -4298,7 +4298,7 @@ struct CodeGenerator {
             if not generic_parameters.is_empty() {
                 mut types: [String] = []
                 for gen_param in generic_parameters {
-                    types.push(.codegen_type_possibly_as_namespace(type_id: gen_param, as_namespace: false))
+                    types.push(.codegen_type_possibly_as_namespace_wasteful(type_id: gen_param, as_namespace: false))
                 }
                 output.appendff("<{}>", join(types, separator: ", "))
             }
@@ -4368,14 +4368,14 @@ struct CodeGenerator {
         if call.function_id.has_value() and .program.get_function(call.function_id!).is_comptime {
             output.appendff(
                 "fail_comptime_call<{}, \"Comptime function {} called outside Jakt compiler\">()"
-                .codegen_type(call.return_type)
+                .codegen_type_wasteful(call.return_type)
                 call.name
             )
             return
         }
 
         if call.callee_throws {
-            output.append(.current_error_handler(forward_error_with_try))
+            output.append(.current_error_handler_wasteful(forward_error_with_try))
             output.append("((")
         }
         match call.name {
@@ -4410,7 +4410,7 @@ struct CodeGenerator {
                     if function.type is ImplicitConstructor or function.type is ExternalClassConstructor {
                         let type_id = call.return_type
                         let type = .program.get_type(type_id)
-                        output.append(.codegen_namespace_path(call))
+                        output.append(.codegen_namespace_path_wasteful(call))
 
                         match type {
                             Struct(struct_id) => {
@@ -4435,7 +4435,7 @@ struct CodeGenerator {
                                         } else {
                                             first = false
                                         }
-                                        output.append(.codegen_type(arg))
+                                        output.append(.codegen_type_wasteful(arg))
                                     }
                                     output.append(">::")
                                     output.append(struct_.create_function_name ?? "__jakt_create")
@@ -4449,7 +4449,7 @@ struct CodeGenerator {
                                         } else {
                                             first = false
                                         }
-                                        output.append(.codegen_type(arg))
+                                        output.append(.codegen_type_wasteful(arg))
                                     }
                                     output.append(">")
                                 }
@@ -4464,7 +4464,7 @@ struct CodeGenerator {
                                 let enum_ = .program.get_enum(enum_id)
                                 let enum_type_module = .program.get_module(enum_id.module)
 
-                                output.append(.codegen_type_possibly_as_namespace(type_id: call.return_type, as_namespace: true))
+                                output.append(.codegen_type_possibly_as_namespace_wasteful(type_id: call.return_type, as_namespace: true))
                                 output.append("::")
                                 output.append(call.name_for_codegen().as_name_for_use())
                             }
@@ -4476,11 +4476,11 @@ struct CodeGenerator {
                             }
                         }
                     } else {
-                        output.append(.codegen_namespace_path(call))
+                        output.append(.codegen_namespace_path_wasteful(call))
                         output.append(call.name_for_codegen().as_name_for_use())
                     }
                 } else {
-                    output.append(.codegen_namespace_path(call))
+                    output.append(.codegen_namespace_path_wasteful(call))
                     output.append(call.name_for_codegen().as_name_for_use())
                 }
 
@@ -4489,7 +4489,7 @@ struct CodeGenerator {
                 if not generic_parameters.is_empty() {
                     mut types: [String] = []
                     for gen_param in generic_parameters {
-                        types.push(.codegen_type_possibly_as_namespace(type_id: gen_param, as_namespace: false))
+                        types.push(.codegen_type_possibly_as_namespace_wasteful(type_id: gen_param, as_namespace: false))
                     }
                     output.appendff("<{}>", join(types, separator: ", "))
                 }
@@ -4510,7 +4510,7 @@ struct CodeGenerator {
         }
     }
 
-    fn codegen_namespace_path(mut this, call: CheckedCall) -> String {
+    fn codegen_namespace_path_wasteful(mut this, call: CheckedCall) -> String {
         if call.function_id.has_value() {
             let func = .program.get_function(call.function_id!)
             if func.owner_scope.has_value() {
@@ -4528,7 +4528,7 @@ struct CodeGenerator {
                     }
                 }
 
-                return .codegen_namespace_qualifier(
+                return .codegen_namespace_qualifier_wasteful(
                     scope_id: func.owner_scope!
                     is_prelude
                     skip_current: false
@@ -4553,7 +4553,7 @@ struct CodeGenerator {
                 output += "<"
                 mut i: usize = 0
                 for param in namespace_.generic_parameters! {
-                    output += .codegen_type(param)
+                    output += .codegen_type_wasteful(param)
                     if i != namespace_.generic_parameters!.size() - 1 {
                         output += ","
                     }
@@ -4699,7 +4699,7 @@ struct CodeGenerator {
             VarDecl(var_id, init) => {
                 let var = .program.get_variable(var_id)
                 let var_type = .program.get_type(var.type_id)
-                output.append(.codegen_type(var.type_id))
+                output.append(.codegen_type_wasteful(var.type_id))
                 output.append(" ")
                 if not var.is_mutable and not (var_type is Reference or var_type is MutableReference) {
                     output.append("const ")
@@ -4770,11 +4770,11 @@ struct CodeGenerator {
     }
 
 
-    fn codegen_type(mut this, anon type_id: TypeId) -> String {
-        return .codegen_type_possibly_as_namespace(type_id, as_namespace: false)
+    fn codegen_type_wasteful(mut this, anon type_id: TypeId) -> String {
+        return .codegen_type_possibly_as_namespace_wasteful(type_id, as_namespace: false)
     }
 
-    fn codegen_type_possibly_as_namespace(mut this, type_id: TypeId, as_namespace: bool) -> String {
+    fn codegen_type_possibly_as_namespace_wasteful(mut this, type_id: TypeId, as_namespace: bool) -> String {
 
         // Since we're using this type, ensure its module header is included to
         // obtain the definition.
@@ -4788,7 +4788,7 @@ struct CodeGenerator {
 
         if .generic_inferences is Some(mappings) {
             if mappings.get(type_id) is Some(id) {
-                return .codegen_type_possibly_as_namespace(type_id: id, as_namespace) + qualifiers
+                return .codegen_type_possibly_as_namespace_wasteful(type_id: id, as_namespace) + qualifiers
             }
         }
 
@@ -4839,20 +4839,20 @@ struct CodeGenerator {
                 yield builder.to_string()
             }
             RawPtr(type_id) => match .program.get_type(type_id).is_boxed(program: .program) {
-                true => .codegen_type_possibly_as_namespace(type_id, as_namespace: true) + "*"
-                false => .codegen_type(type_id) + "*"
+                true => .codegen_type_possibly_as_namespace_wasteful(type_id, as_namespace: true) + "*"
+                false => .codegen_type_wasteful(type_id) + "*"
             }
-            Reference(type_id) => .codegen_type(type_id) + " const&"
-            MutableReference(type_id) => .codegen_type(type_id) + "&"
-            GenericResolvedType(id, args) | GenericInstance(id, args) => .codegen_generic_type_instance(id, args, as_namespace)
+            Reference(type_id) => .codegen_type_wasteful(type_id) + " const&"
+            MutableReference(type_id) => .codegen_type_wasteful(type_id) + "&"
+            GenericResolvedType(id, args) | GenericInstance(id, args) => .codegen_generic_type_instance_wasteful(id, args, as_namespace)
             Struct(id) => {
                 let implements_type = .program.get_struct(id).implements_type
                 yield match implements_type.has_value() {
-                    true => .codegen_type_possibly_as_namespace(type_id: implements_type!, as_namespace)
-                    false => .codegen_struct_type(id, as_namespace)
+                    true => .codegen_type_possibly_as_namespace_wasteful(type_id: implements_type!, as_namespace)
+                    false => .codegen_struct_type_wasteful(id, as_namespace)
                 }
             }
-            Enum(id) => .codegen_enum_type(id, as_namespace)
+            Enum(id) => .codegen_enum_type_wasteful(id, as_namespace)
             GenericEnumInstance(id, args) => {
                 mut builder = StringBuilder::create()
                 .codegen_generic_enum_instance(id, args, as_namespace, output: &mut builder)
@@ -4865,7 +4865,7 @@ struct CodeGenerator {
                 if can_throw {
                     builder.append("ErrorOr<")
                 }
-                builder.append(.codegen_type(return_type_id))
+                builder.append(.codegen_type_wasteful(return_type_id))
                 if can_throw {
                     builder.append(">")
                 }
@@ -4877,7 +4877,7 @@ struct CodeGenerator {
                     } else {
                         builder.append(", ")
                     }
-                    builder.append(.codegen_type(param))
+                    builder.append(.codegen_type_wasteful(param))
                 }
                 builder.append(")>")
                 yield builder.to_string()
@@ -4892,7 +4892,7 @@ struct CodeGenerator {
         } + qualifiers
     }
 
-    fn codegen_generic_type_instance(mut this, id: StructId, args: [TypeId], as_namespace: bool) -> String {
+    fn codegen_generic_type_instance_wasteful(mut this, id: StructId, args: [TypeId], as_namespace: bool) -> String {
         mut output = ""
         let type_module = .program.get_module(id.module)
 
@@ -4910,7 +4910,7 @@ struct CodeGenerator {
 
             let inner_struct_id = inner_weak_ptr_struct_id.value()
             let struct_ = .program.get_struct(inner_struct_id)
-            output += .codegen_namespace_qualifier(scope_id: struct_.scope_id, is_prelude: type_module.is_prelude())
+            output += .codegen_namespace_qualifier_wasteful(scope_id: struct_.scope_id, is_prelude: type_module.is_prelude())
             output += struct_.name_for_codegen().as_name_for_use()
 
             output += ">"
@@ -4922,7 +4922,7 @@ struct CodeGenerator {
                 output += "NonnullRefPtr<"
             }
             output += namespace_
-            output += .codegen_namespace_qualifier(scope_id: struct_.scope_id, is_prelude: type_module.is_prelude())
+            output += .codegen_namespace_qualifier_wasteful(scope_id: struct_.scope_id, is_prelude: type_module.is_prelude())
             output += struct_.name_for_codegen().as_name_for_use()
             output += "<"
             mut first = true
@@ -4932,7 +4932,7 @@ struct CodeGenerator {
                 } else {
                     first = false
                 }
-                output += .codegen_type(type_id)
+                output += .codegen_type_wasteful(type_id)
             }
             output += ">"
             if acquired_by_ref {
@@ -4954,7 +4954,7 @@ struct CodeGenerator {
         let enum_ = .program.get_enum(id)
         if not as_namespace and enum_.is_boxed {
             output.append("NonnullRefPtr<")
-            let qualifier = .codegen_namespace_qualifier(scope_id: enum_.scope_id, is_prelude: .program.get_module(id.module).is_prelude())
+            let qualifier = .codegen_namespace_qualifier_wasteful(scope_id: enum_.scope_id, is_prelude: .program.get_module(id.module).is_prelude())
 
             if not qualifier.is_empty() {
                 output.append("typename ")
@@ -4963,7 +4963,7 @@ struct CodeGenerator {
             output.append(enum_.name)
             close_tag = true
         } else {
-            let qualifier = .codegen_namespace_qualifier(scope_id: enum_.scope_id, is_prelude: .program.get_module(id.module).is_prelude())
+            let qualifier = .codegen_namespace_qualifier_wasteful(scope_id: enum_.scope_id, is_prelude: .program.get_module(id.module).is_prelude())
 
             if not qualifier.is_empty() {
                 if not as_namespace {
@@ -4982,7 +4982,7 @@ struct CodeGenerator {
                 first = false
             }
 
-            output.append(.codegen_type(type_id))
+            output.append(.codegen_type_wasteful(type_id))
         }
         output.append(">")
         if close_tag {
@@ -4990,7 +4990,7 @@ struct CodeGenerator {
         }
     }
 
-    fn codegen_namespace_qualifier(
+    fn codegen_namespace_qualifier_wasteful(
         mut this
         scope_id: ScopeId
         is_prelude: bool
@@ -5051,7 +5051,7 @@ struct CodeGenerator {
                                     builder.append(", ")
                                 }
 
-                                builder.append(.codegen_type(mapping))
+                                builder.append(.codegen_type_wasteful(mapping))
                             }
                             builder.append(">")
                         }
@@ -5089,32 +5089,32 @@ struct CodeGenerator {
         .codegen_function_in_namespace(function, containing_struct: None, as_method, &mut output)
     }
 
-    fn codegen_struct_type(mut this, id: StructId, as_namespace: bool) -> String {
+    fn codegen_struct_type_wasteful(mut this, id: StructId, as_namespace: bool) -> String {
         mut output = StringBuilder::create()
         let type_module = .program.get_module(id.module)
         let checked_struct = .program.get_struct(id)
 
         if not as_namespace and checked_struct.record_type is Class {
             output.append("NonnullRefPtr<")
-            output.append(.codegen_namespace_qualifier(scope_id: checked_struct.scope_id, is_prelude: type_module.is_prelude()))
+            output.append(.codegen_namespace_qualifier_wasteful(scope_id: checked_struct.scope_id, is_prelude: type_module.is_prelude()))
             output.append(checked_struct.name_for_codegen().as_name_for_use())
             output.append(">")
         } else {
-            output.append(.codegen_namespace_qualifier(scope_id: checked_struct.scope_id, is_prelude: type_module.is_prelude()))
+            output.append(.codegen_namespace_qualifier_wasteful(scope_id: checked_struct.scope_id, is_prelude: type_module.is_prelude()))
             output.append(checked_struct.name_for_codegen().as_name_for_use())
         }
 
         return output.to_string()
     }
 
-    fn codegen_enum_type(mut this, id: EnumId, as_namespace: bool) -> String {
+    fn codegen_enum_type_wasteful(mut this, id: EnumId, as_namespace: bool) -> String {
         mut output = StringBuilder::create()
         let type_module = .program.get_module(id.module)
         let checked_enum = .program.get_enum(id)
 
         if not as_namespace and checked_enum.is_boxed {
             output.append("NonnullRefPtr<")
-            let qualifier = .codegen_namespace_qualifier(scope_id: checked_enum.scope_id, is_prelude: type_module.is_prelude())
+            let qualifier = .codegen_namespace_qualifier_wasteful(scope_id: checked_enum.scope_id, is_prelude: type_module.is_prelude())
             if not qualifier.is_empty() {
                 output.append("typename ")
                 output.append(qualifier)
@@ -5122,7 +5122,7 @@ struct CodeGenerator {
             output.append(checked_enum.name)
             output.append(">")
         } else {
-            let qualifier = .codegen_namespace_qualifier(scope_id: checked_enum.scope_id, is_prelude: type_module.is_prelude())
+            let qualifier = .codegen_namespace_qualifier_wasteful(scope_id: checked_enum.scope_id, is_prelude: type_module.is_prelude())
             if not qualifier.is_empty() {
                 output.append(qualifier)
             }
@@ -5132,7 +5132,7 @@ struct CodeGenerator {
         return output.to_string()
     }
 
-    fn codegen_destructor_predecl(mut this, anon struct_: &CheckedStruct) -> String {
+    fn codegen_destructor_predecl_wasteful(mut this, anon struct_: &CheckedStruct) -> String {
         mut output = StringBuilder::create()
         output.append("public:\n")
         output.append("    ~")
@@ -5148,7 +5148,7 @@ struct CodeGenerator {
         is_inline: bool
         output: &mut StringBuilder
     ) {
-        let qualified_name = .codegen_type_possibly_as_namespace(type_id: struct_.type_id, as_namespace: true)
+        let qualified_name = .codegen_type_possibly_as_namespace_wasteful(type_id: struct_.type_id, as_namespace: true)
 
         if not is_inline and not struct_.generic_parameters.is_empty() {
             output.append("template <")
@@ -5192,7 +5192,7 @@ struct CodeGenerator {
                 }
 
                 let param_type_id = param.variable.type_id
-                output.append(.codegen_type(param_type_id))
+                output.append(.codegen_type_wasteful(param_type_id))
                 output.append(" a_")
                 output.append(param.variable.name_for_codegen().as_name_for_definition())
             }
@@ -5210,7 +5210,7 @@ struct CodeGenerator {
                     first = false
                 }
 
-                class_name_with_generics += .codegen_type(generic_parameter.type_id)
+                class_name_with_generics += .codegen_type_wasteful(generic_parameter.type_id)
             }
             if not structure.generic_parameters.is_empty() {
                 class_name_with_generics += ">"
@@ -5228,7 +5228,7 @@ struct CodeGenerator {
                     first = false
                 }
 
-                output.append(.codegen_type(param.variable.type_id))
+                output.append(.codegen_type_wasteful(param.variable.type_id))
                 output.append(" ")
                 output.append(param.variable.name_for_codegen().as_name_for_definition())
             }
@@ -5248,7 +5248,7 @@ struct CodeGenerator {
                 first = false
             }
 
-            output.append(.codegen_type(param.variable.type_id))
+            output.append(.codegen_type_wasteful(param.variable.type_id))
             output.append(" a_")
             output.append(param.variable.name_for_codegen().as_name_for_definition())
         }
@@ -5269,7 +5269,7 @@ struct CodeGenerator {
         }
 
         let structure = .program.get_struct(struct_id)
-        let qualified_name = .codegen_type_possibly_as_namespace(type_id, as_namespace: true)
+        let qualified_name = .codegen_type_possibly_as_namespace_wasteful(type_id, as_namespace: true)
 
         if not is_inline and not structure.generic_parameters.is_empty() {
             output.append("template <")
@@ -5295,7 +5295,7 @@ struct CodeGenerator {
                 }
 
                 let param_type_id = param.variable.type_id
-                output.append(.codegen_type(param_type_id))
+                output.append(.codegen_type_wasteful(param_type_id))
                 output.append(" a_")
                 output.append(param.variable.name_for_codegen().as_name_for_definition())
             }
@@ -5345,7 +5345,7 @@ struct CodeGenerator {
                         first = false
                     }
 
-                    class_name_with_generics += .codegen_type(generic_parameter.type_id)
+                    class_name_with_generics += .codegen_type_wasteful(generic_parameter.type_id)
                 }
                 if not structure.generic_parameters.is_empty() {
                     class_name_with_generics += ">"
@@ -5370,7 +5370,7 @@ struct CodeGenerator {
                         first = false
                     }
 
-                    output.append(.codegen_type(param.variable.type_id))
+                    output.append(.codegen_type_wasteful(param.variable.type_id))
                     output.append(" ")
                     output.append(param.variable.name_for_codegen().as_name_for_definition())
                 }
@@ -5411,7 +5411,7 @@ struct CodeGenerator {
                 first = false
             }
 
-            output.append(.codegen_type(param.variable.type_id))
+            output.append(.codegen_type_wasteful(param.variable.type_id))
             output.append(" a_")
             output.append(param.variable.name_for_codegen().as_name_for_definition())
         }
@@ -5477,8 +5477,8 @@ struct CodeGenerator {
             }
             if not function.type is Destructor and not function.type is Constructor {
                 output.append(match function.can_throw {
-                    true => format("ErrorOr<{}>", .codegen_type(function.return_type_id))
-                    false => .codegen_type(function.return_type_id)
+                    true => format("ErrorOr<{}>", .codegen_type_wasteful(function.return_type_id))
+                    false => .codegen_type_wasteful(function.return_type_id)
                 })
             }
         }
@@ -5489,7 +5489,7 @@ struct CodeGenerator {
             output.append("main")
         } else {
             let qualifier = match containing_struct.has_value() {
-                true => .codegen_type_possibly_as_namespace(type_id: containing_struct!, as_namespace: true)
+                true => .codegen_type_possibly_as_namespace_wasteful(type_id: containing_struct!, as_namespace: true)
                 false => ""
             }
             if not qualifier.is_empty() {
@@ -5515,7 +5515,7 @@ struct CodeGenerator {
                 } else {
                     first = false
                 }
-                output.append(.codegen_type(type))
+                output.append(.codegen_type_wasteful(type))
             }
             output.append(">")
         }
@@ -5538,7 +5538,7 @@ struct CodeGenerator {
                 first = false
             }
             let variable_type = .program.get_type(variable.type_id)
-            output.append(.codegen_type(variable.type_id))
+            output.append(.codegen_type_wasteful(variable.type_id))
             output.append(" ")
             if not variable.is_mutable and not (variable_type is Reference or variable_type is MutableReference) {
                 output.append("const ")

@@ -81,35 +81,16 @@ struct ControlFlowState {
     }
 
     // apply control flow macro to a match, from outside its scope
-    fn apply_control_flow_macro_wasteful(this, anon x: String, func_return_type: TypeId, func_can_throw: bool) -> String {
-        let handle_loop_controls = match are_loop_exits_allowed(.allowed_exits) {
-            // Not inside a loop, so the inner match better not yield those
-            // values, since there's no one that can catch them.
-            // In practice it's impossible because break/continue is guaranteed
-            // by the typechecker to only appear within loop contexts.
-            false => ""
-            // there's a loop somewhere up there.
-            true => {
-                let (break_stmt, continue_stmt) = match .directly_inside_match {
-                    // This match has to forward the loop break/continues
-                    true => ("return JaktInternal::LoopBreak {}", "return JaktInternal::LoopContinue {}")
-                    // This is the loop that the inner match wants to modify the control flow of.
-                    false => ("break", "continue")
+    fn apply_control_flow_macro(this, anon x: fn(anon out: &mut StringBuilder) -> void, func_return_type: TypeId, func_can_throw: bool, output: &mut StringBuilder) {
+        output.append("({
+    auto&& _jakt_value = ")
 
-                }
-                yield format("if (_jakt_value.is_loop_break())
-        {};
-    if (_jakt_value.is_loop_continue())
-        {};
-    ", break_stmt, continue_stmt)
-            }
-        }
+        x(output)
 
         let cpp_func_returns_void = not func_can_throw and (
             func_return_type == void_type_id() or
             func_return_type == unknown_type_id() or
             func_return_type == never_type_id())
-
         // Make sure we don't return 'void' when forwarding a return inside a match IIFE.
         // We'll have to use {} like in the codegen for return, to construct an
         // `ExplicitValueOrControlFlow` that signals that we want to return from
@@ -119,17 +100,34 @@ struct ControlFlowState {
             true => "{}"
             false => "_jakt_value.release_return()"
         }
-
-        return format("({{
-    auto&& _jakt_value = {0};
+        output.appendff(";
     if (_jakt_value.is_return())
-        return {1};
-    {2}_jakt_value.release_value();
-}})",
-            x, forward_return_expr, handle_loop_controls
-        )
+        return {0};\n", forward_return_expr)
 
+        match are_loop_exits_allowed(.allowed_exits) {
+            // Not inside a loop, so the inner match better not yield those
+            // values, since there's no one that can catch them.
+            // In practice it's impossible because break/continue is guaranteed
+            // by the typechecker to only appear within loop contexts.
+            false => {}
+            // there's a loop somewhere up there.
+            true => {
+                let (break_stmt, continue_stmt) = match .directly_inside_match {
+                    // This match has to forward the loop break/continues
+                    true => ("return JaktInternal::LoopBreak {}", "return JaktInternal::LoopContinue {}")
+                    // This is the loop that the inner match wants to modify the control flow of.
+                    false => ("break", "continue")
 
+                }
+                output.appendff("if (_jakt_value.is_loop_break())
+        {};
+    if (_jakt_value.is_loop_continue())
+        {};
+    ", break_stmt, continue_stmt)
+            }
+        }
+
+        output.append("_jakt_value.release_value(); })")
     }
 }
 
@@ -234,7 +232,7 @@ struct CodeGenerator {
 
     // `forward_error_with_try` controls whether errors are handled through the TRY() macro or through an external mechanism put by the caller.
     // noreturn functions may not throw, so let them crash instead.
-    fn current_error_handler_wasteful(this, forward_error_with_try: bool = true) -> String {
+    fn current_error_handler(this, forward_error_with_try: bool = true) -> StringView {
         if .inside_defer or (
             .current_function.has_value() and
             .current_function!.return_type_id == never_type_id() and
@@ -2740,7 +2738,7 @@ struct CodeGenerator {
                     }
 
                     let name = .program.get_function(ids![0]).name_for_codegen().as_name_for_use()
-                    let error_handler = match val.may_throw { true => .current_error_handler_wasteful(forward_error_with_try), else => "" }
+                    let error_handler = match val.may_throw { true => .current_error_handler(forward_error_with_try), else => "" }
                     output.appendff(
                         "{}({}::{}(\"{}\"sv))"
                         error_handler
@@ -3095,7 +3093,7 @@ struct CodeGenerator {
                 output.append(var.name_for_codegen().as_name_for_use())
             }
             Match(expr, match_cases, type_id, all_variants_constant) => {
-                .codegen_match(expr, match_cases, type_id, all_variants_constant, &mut output)
+                .codegen_match_wasteful(expr, match_cases, type_id, all_variants_constant, &mut output)
             }
             EnumVariantArg(expr, arg, enum_variant) => {
                 let variant_name = enum_variant.name()
@@ -3259,40 +3257,37 @@ struct CodeGenerator {
                     else => true
                 }
 
-                mut builder = StringBuilder::create()
                 let last_control_flow = .control_flow_state
-                if can_affect_loop {
-                    .control_flow_state.indirectly_inside_try_block = true
-                    builder.append(format("[&]() -> JaktInternal::ExplicitValueOrControlFlow<ErrorOr<void>, {}> {{\n", .codegen_function_return_type_wasteful(function: .current_function!)))
-                } else {
-                    builder.append("auto ")
-                    builder.append(try_var)
-                    builder.append(" = [&]() -> ErrorOr<void> {\n")
-                    .control_flow_state.directly_inside_match = false
-                    .control_flow_state.indirectly_inside_match = false
-                }
-                .control_flow_state.passes_through_try = true
-                .codegen_statement(statement: stmt, output: &mut builder)
-                builder.append(";\n")
-                if can_affect_loop {
-                    builder.append("return JaktInternal::ExplicitValue<ErrorOr<void>>({});")
-                } else {
-                    builder.append("return ErrorOr<void> {};")
-                }
-                builder.append("}();\n")
+
+                output.append("auto ")
+                output.append(try_var)
+                output.append(" = ")
 
                 if can_affect_loop {
-                    output.append("auto ")
-                    output.append(try_var)
-                    output.append(" = ")
-                    output.append(.control_flow_state.apply_control_flow_macro_wasteful(
-                        builder.to_string()
+                    .control_flow_state.apply_control_flow_macro(
+                        fn[this, &stmt](anon output: &mut StringBuilder) {
+                            .control_flow_state.indirectly_inside_try_block = true
+                            output.appendff("[&]() -> JaktInternal::ExplicitValueOrControlFlow<ErrorOr<void>, {}> {{\n", .codegen_function_return_type_wasteful(function: .current_function!))
+                            .control_flow_state.passes_through_try = true
+                            .codegen_statement(statement: stmt, output)
+                            output.append(";\n")
+                            output.append("return JaktInternal::ExplicitValue<ErrorOr<void>>({});")
+                            output.append("}();\n")
+                        }
                         func_return_type: .current_function!.return_type_id
                         func_can_throw: .current_function!.can_throw
-                    ))
+                        output
+                    )
                     output.append(";\n")
                 } else {
-                    output.append(builder.to_string())
+                    output.append("[&]() -> ErrorOr<void> {\n")
+                    .control_flow_state.directly_inside_match = false
+                    .control_flow_state.indirectly_inside_match = false
+                    .control_flow_state.passes_through_try = true
+                    .codegen_statement(statement: stmt, output)
+                    output.append(";\n")
+                    output.append("return ErrorOr<void> {};")
+                    output.append("}();\n")
                 }
 
                 output.append("if (")
@@ -3424,7 +3419,7 @@ struct CodeGenerator {
         }
     }
 
-    fn codegen_match(
+    fn codegen_match_wasteful(
         mut this
         expr: CheckedExpression
         match_cases: [CheckedMatchCase]
@@ -3432,43 +3427,44 @@ struct CodeGenerator {
         all_variants_constant: bool
         output: &mut StringBuilder
     ) {
-        mut builder = StringBuilder::create()
-        let last_control_flow = .control_flow_state
-        .control_flow_state = .control_flow_state.enter_match()
+        .control_flow_state.apply_control_flow_macro(
+            fn[this, &expr, &match_cases, type_id, all_variants_constant](anon output: &mut StringBuilder) {
 
-        let cpp_match_result_type = .codegen_type_wasteful(type_id)
-        let expr_type = .program.get_type(expr.type())
+                let cpp_match_result_type = .codegen_type_wasteful(type_id)
+                let expr_type = .program.get_type(expr.type())
 
-        let old_yield_method = .yield_method
-        .yield_method = YieldMethod::ReturnExplicitValue(ctor: format("JaktInternal::ExplicitValue<{}>", cpp_match_result_type))
-        defer .yield_method = old_yield_method
+                let old_yield_method = .yield_method
+                .yield_method = YieldMethod::ReturnExplicitValue(ctor: format("JaktInternal::ExplicitValue<{}>", cpp_match_result_type))
+                defer .yield_method = old_yield_method
 
-        if expr_type is Enum(enum_id) {
-            .codegen_enum_match(
-                enum_: .program.get_enum(enum_id)
-                expr
-                match_cases
-                type_id
-                cpp_match_result_type
-                all_variants_constant
-                output: &mut builder
-            )
-        } else {
-            .codegen_generic_match(
-                expr
-                cases: match_cases
-                return_type_id: type_id
-                cpp_match_result_type
-                all_variants_constant
-                output: &mut builder
-            )
-        }
-        .control_flow_state = last_control_flow
-        output.append(.control_flow_state.apply_control_flow_macro_wasteful(
-            builder.to_string()
+                let last_control_flow = .control_flow_state
+                .control_flow_state = .control_flow_state.enter_match()
+                defer .control_flow_state = last_control_flow
+                if expr_type is Enum(enum_id) {
+                    .codegen_enum_match(
+                        enum_: .program.get_enum(enum_id)
+                        expr
+                        match_cases
+                        type_id
+                        cpp_match_result_type
+                        all_variants_constant
+                        output
+                    )
+                } else {
+                    .codegen_generic_match(
+                        expr
+                        cases: match_cases
+                        return_type_id: type_id
+                        cpp_match_result_type
+                        all_variants_constant
+                        output
+                    )
+                }
+            }
             func_return_type: .current_function!.return_type_id
             func_can_throw: .current_function!.can_throw
-        ))
+            output
+        )
     }
 
     fn codegen_generic_match(
@@ -3915,7 +3911,7 @@ struct CodeGenerator {
             let rhs_can_throw = rhs.can_throw()
 
             if rhs_can_throw {
-                output.append(.current_error_handler_wasteful())
+                output.append(.current_error_handler())
                 output.append("((")
             }
 
@@ -4184,7 +4180,7 @@ struct CodeGenerator {
         forward_error_with_try: bool = true
     ) {
         if call.callee_throws {
-            output.append(.current_error_handler_wasteful(forward_error_with_try))
+            output.append(.current_error_handler(forward_error_with_try))
             output.append("((")
         }
 
@@ -4375,7 +4371,7 @@ struct CodeGenerator {
         }
 
         if call.callee_throws {
-            output.append(.current_error_handler_wasteful(forward_error_with_try))
+            output.append(.current_error_handler(forward_error_with_try))
             output.append("((")
         }
         match call.name {

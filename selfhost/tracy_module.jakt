@@ -1,0 +1,7 @@
+import jakt::prelude::configuration { UserConfiguration }
+
+comptime tracy_module() -> [String] => match UserConfiguration::value_of("jakt.tracing_enable") ?? "off" {
+    "off" => ["tracy_disabled"]
+    else => ["tracy_enabled"]
+}
+

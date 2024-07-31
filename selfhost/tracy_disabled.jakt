@@ -1,0 +1,5 @@
+
+struct Zone {
+    fn begin(name: StringView) -> Zone => Zone()
+    fn end(this) {}
+}

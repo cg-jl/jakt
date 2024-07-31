@@ -150,6 +150,7 @@ extern struct StringView {
     fn length(this) -> usize
     [[name="operator[]"]]
     fn byte_at(this, anon index: usize) -> u8
+    fn characters_without_null_termination(this) -> raw c_char
 }
 
 extern struct Error {

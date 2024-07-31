@@ -28,6 +28,7 @@ import typechecker { Typechecker }
 import types { FunctionId, ResolvedNamespace, ScopeId, ModuleId, Value, ValueImpl }
 import utility { FileId, Queue, Span, escape_for_quotes, join, write_to_file }
 import git
+import tracy
 
 import platform_fs() { DirectoryIterator, make_directory }
 
@@ -174,6 +175,8 @@ fn value_or_throw<T>(anon maybe: T?) throws -> T {
 }
 
 fn main(args: [String]) -> c_int {
+    let zone = tracy::Zone::begin(name: "main ;)")
+    defer zone.end()
     if args.size() <= 1 {
         eprintln("{}", usage())
         return 1

@@ -1,0 +1,51 @@
+import jakt::platform::utility { allocate }
+import utility { panic }
+
+// adapted from https://github.com/oskarnp/odin-tracy/blob/master/bindings.odin
+import extern c "tracy/TracyC.h" {
+    extern struct ___tracy_c_zone_context {
+        id: u32
+        active: u32
+    }
+    extern fn ___tracy_alloc_srcloc_name(line: u32, source: raw c_char, source_size: usize, function: raw c_char, function_size: usize, name: raw c_char, name_size: usize) -> u64
+    extern fn ___tracy_emit_zone_begin_alloc(srcloc: u64, active: u32) -> ___tracy_c_zone_context
+    extern fn ___tracy_emit_zone_end(ctx: ___tracy_c_zone_context)
+} before_include define { TRACY_ENABLE = "1" }
+
+import extern "AK/SourceLocation.h" {
+    namespace AK {
+        extern struct SourceLocation {
+            fn current() -> SourceLocation
+            fn function_name(this) -> StringView
+            fn filename(this) -> StringView
+            fn line_number(this) -> u32
+        }
+    }
+}
+
+// FIXME: Even though it is called with the updated runtime, bootstrap is still not able to distinguish the new API that I added.
+// a bit strange, isn't it?
+fn sv_raw(anon sv: StringView) -> raw const c_char {
+    unsafe { cpp { "return sv.characters_without_null_termination();" }}
+    panic("unreachable")
+}
+
+struct Zone {
+    ctx: ___tracy_c_zone_context
+
+    fn begin(name: StringView, color: u32 = 0, active: bool = true, loc: AK::SourceLocation = AK::SourceLocation::current()) -> Zone {
+        let function = loc.function_name()
+        let source = loc.filename()
+        let line = loc.line_number()
+
+
+        let srcloc = ___tracy_alloc_srcloc_name(line, source: sv_raw(source), source_size: source.length(), function: sv_raw(function), function_size: function.length(), name: sv_raw(name), name_size: name.length())
+        let active_u: u32 = match active { true => 1, false => 0 }
+        let ctx = ___tracy_emit_zone_begin_alloc(srcloc, active: active_u)
+        return Zone(ctx)
+    }
+
+    fn end(this) {
+        ___tracy_emit_zone_end(ctx: .ctx)
+    }
+}

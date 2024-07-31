@@ -49,6 +49,7 @@ include("cmake/symlink.cmake")
 
 set(FINAL_STAGE "1" CACHE STRING "Compiler stage to stop at, either 1 (default) or 2)")
 option(SERENITY_SOURCE_DIR PATH "Path of an existing SerenityOS checkout to pull AK files from")
+option(TRACING_ENABLE OFF)
 set(CPP_AUTO_IMPORT_PROCESSOR "${JAKT_CPP_AUTO_IMPORT_PROCESSOR_DEFAULT}" CACHE STRING "'import extern' processor to use (default=none/clang/libcpp/none)")
 
 set(JAKT_USING_CLANG OFF)
@@ -94,6 +95,16 @@ add_subdirectory(runtime)
 if (NOT ${JAKT_TARGET_TRIPLE} STREQUAL ${JAKT_DEFAULT_TARGET_TRIPLE})
   jakt_make_runtime_available(TARGET ${JAKT_TARGET_TRIPLE})
 endif()
+
+FetchContent_Declare(
+    tracy
+    GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+    GIT_TAG v0.10
+    GIT_SHALLOW TRUE
+    GIT_PROGRESS TRUE
+)
+FetchContent_MakeAvailable(tracy)
+
 
 set(JAKT_BOOTSTRAP_COMPILER "" CACHE FILEPATH "Path to an existing bootstrap jakt compiler")
 set(JAKT_BUILDING_STAGE0 NO)
@@ -168,6 +179,7 @@ set(SELFHOST_SOURCES
   selfhost/utility.jakt
   selfhost/platform.jakt
   selfhost/cpp_import/common.jakt
+  selfhost/tracy.jakt
   ${JAKT_CPP_AUTO_IMPORT_EXTRA_SOURCES}
 )
 
@@ -217,6 +229,12 @@ set(SELFHOST_CONFIGS
 if(NOT JAKT_CLANG_RESOURCE_DIR STREQUAL "")
   list(APPEND SELFHOST_CONFIGS "jakt.cpp_import.processor.clang.resource_dir=${JAKT_CLANG_RESOURCE_DIR}")
 endif()
+if(TRACING_ENABLE)
+  list(APPEND SELFHOST_SOURCES selfhost/tracy_enabled.jakt)
+  list(APPEND SELFHOST_CONFIGS "jakt.tracing_enable=on")
+else()
+  list(APPEND SELFHOST_SOURCES selfhost/tracy_disabled.jakt)
+endif()
 
 
 add_jakt_executable(jakt_stage1
@@ -227,6 +245,10 @@ add_jakt_executable(jakt_stage1
   RUNTIME_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/runtime"
   CONFIGS ${SELFHOST_CONFIGS}
 )
+if(TRACING_ENABLE)
+  target_link_libraries(jakt_stage1 PRIVATE TracyClient)
+  target_include_directories(jakt_stage1 PRIVATE TracyClient)
+endif()
 
 if (JAKT_USING_CLANG)
   target_link_libraries(jakt_stage1 PRIVATE libclang)
@@ -263,6 +285,10 @@ if (FINAL_STAGE GREATER_EQUAL 2)
     PRIVATE
       ${CLANG_INCLUDE_DIRS}
   )
+  if(TRACING_ENABLE)
+    target_link_libraries(jakt_stage2 PRIVATE TracyClient)
+    target_include_directories(jakt_stage2 PRIVATE TracyClient)
+  endif()
   if (JAKT_USING_CLANG)
     target_link_libraries(jakt_stage2 PRIVATE libclang)
   endif()

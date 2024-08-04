@@ -166,6 +166,12 @@ struct Typechecker {
     // here so it can be modified by the aforementioned functions.
     current_block: CheckedBlock = CheckedBlock(statements: [], scope_id: ScopeId(module_id: ModuleId(id: 0xFFFFFFFFFFFFFFFFuz), id: 0xFFFFFFFFFFFFFFFFuz) control_flow: BlockControlFlow::NeverReturns)
 
+    fn fresh_temporary(mut this) -> String {
+        let name = format("__jakt_tmp{}", .temp_var_count)
+        .temp_var_count++
+        return name
+    }
+
     fn set_self_type_id(mut this, anon type_id: TypeId) {
         if .get_type(type_id) is Struct(struct_id) and .get_struct(struct_id).implements_type is Some(replacement_type_id) {
             .self_type_id = replacement_type_id
@@ -6689,7 +6695,7 @@ struct Typechecker {
         Continue(span) => .typecheck_continue(span)
         Break(span) => .typecheck_break(span)
         VarDecl(var, init, span) => .typecheck_var_decl(var, init, scope_id, safety_mode, span)
-        DestructuringAssignment(vars, var_decl, span) => .typecheck_destructuring_assignment(vars, var_decl, scope_id, safety_mode, span)
+        DestructuringAssignment(vars, init, span) => .typecheck_destructuring_assignment(vars, parsed_init: init, scope_id, safety_mode, span)
         If(condition, then_block, else_statement, span) => .typecheck_if(condition, then_block, else_statement, scope_id, safety_mode, span)
         Garbage(span) => CheckedStatement::Garbage(span)
         For(iterator_name, name_span, is_destructuring, range, block, span) => .typecheck_for(iterator_name, name_span, is_destructuring, range, block, scope_id, safety_mode, span)
@@ -7097,36 +7103,42 @@ struct Typechecker {
             }
             UnaryOp(expr, op) => {
                 if op is IsEnumVariant(inner, bindings) {
-                    let tmp_name = format("__jakt_tmp{}", .temp_var_count)
-                    .temp_var_count++
-                    let tmp_decl = ParsedVarDecl(
-                        name: tmp_name
-                        parsed_type: ParsedType::Empty
-                        // Declare all of these temps as mutable since they will
-                        // have better flexibility for moving in the C++ code.
-                        // Might want to tighten this if interpreter starts separating
-                        // between mutable/non-mutable variables for performance, or to
-                        // debug issues with the typechecker.
-                        is_mutable: true
-                        inlay_span: None
-                        span: expr.span()
-                    )
-                    // NOTE: this statement is processed twice, once here with ignoring errors and once in
-                    // the .add_pre_condition function. It is needed as a ParsedStatement since it must be embeddable
-                    // in inner `if` statements from the LogicalAnd case.
-                    let var_decl_stmt = ParsedStatement::VarDecl(var: tmp_decl, init: expr, span: expr.span())
-                    pre_condition.push(var_decl_stmt)
+                    let ignore_errors_state = .ignore_errors
+                    .ignore_errors = true
+                    let (tmp_name, wrapped_scope_id) = match expr {
+                        // no need to emit a temporary if we've already got a variable
+                        Var(name) => (name, scope_id)
+                        else => {
+                            let tmp_name = .fresh_temporary()
+                            let tmp_decl = ParsedVarDecl(
+                                name: tmp_name
+                                parsed_type: ParsedType::Empty
+                                // Declare all of these temps as mutable since they will
+                                // have better flexibility for moving in the C++ code.
+                                // Might want to tighten this if interpreter starts separating
+                                // between mutable/non-mutable variables for performance, or to
+                                // debug issues with the typechecker.
+                                is_mutable: true
+                                inlay_span: None
+                                span: expr.span()
+                            )
+                            // NOTE: this statement is processed twice, once here with ignoring errors and once in
+                            // the .add_pre_condition function. It is needed as a ParsedStatement since it must be embeddable
+                            // in inner `if` statements from the LogicalAnd case.
+                            let var_decl_stmt = ParsedStatement::VarDecl(var: tmp_decl, init: expr, span: expr.span())
+                            pre_condition.push(var_decl_stmt)
+                            // Make sure that we know what the temp is when accessing it, otherwise it's going
+                            // to have an unknown type at best. A separate child scope is used to avoid polluting
+                            // the namespace of the current scope, since the statements that we add will be processed
+                            // again.
+                            let wrapped_scope_id = .create_scope(parent_scope_id: scope_id, can_throw: .get_scope(scope_id).can_throw, debug_name: "hidden-temp-var-in-IsEnumVariant")
+                            .typecheck_statement(var_decl_stmt, scope_id: wrapped_scope_id, safety_mode: SafetyMode::Safe)
+                            yield (tmp_name, wrapped_scope_id)
+                        }
+                    }
                     let unary_op_single_condition = ParsedExpression::UnaryOp(expr: ParsedExpression::Var(name: tmp_name, span: expr.span()), op: UnaryOperator::Is(inner), span)
                     mut outer_if_stmts: [ParsedStatement] = []
 
-                    let ignore_errors_state = .ignore_errors
-                    .ignore_errors = true
-                    // Make sure that we know what the temp is when accessing it, otherwise it's going
-                    // to have an unknown type at best. A separate child scope is used to avoid polluting
-                    // the namespace of the current scope, since the statements that we add will be processed
-                    // again.
-                    let wrapped_scope_id = .create_scope(parent_scope_id: scope_id, can_throw: .get_scope(scope_id).can_throw, debug_name: "hidden-temp-var-in-IsEnumVariant")
-                    .typecheck_statement(var_decl_stmt, scope_id: wrapped_scope_id, safety_mode: SafetyMode::Safe)
                     let pre_checked_unary_op = .typecheck_expression(
                         unary_op_single_condition,
                         scope_id: wrapped_scope_id,
@@ -7228,42 +7240,91 @@ struct Typechecker {
         return CheckedStatement::If(condition: checked_condition, then_block: checked_block, else_statement: checked_else, span)
     }
 
-    fn typecheck_destructuring_assignment(mut this, vars: [ParsedVarDecl], var_decl: ParsedStatement, scope_id: ScopeId, safety_mode: SafetyMode, span: Span) throws -> CheckedStatement {
-        mut var_decls: [CheckedStatement] = []
-        let checked_tuple_var_decl = .typecheck_statement(statement: var_decl, scope_id, safety_mode)
-        mut expr_type_id: TypeId = unknown_type_id()
-        mut tuple_var_id = VarId(module: ModuleId(id: 0), id: 0)
-        if checked_tuple_var_decl is VarDecl(var_id, init) {
-            expr_type_id = init.type()
-            tuple_var_id = var_id
-        } else {
-            .error("Destructuting assignment should be a variable declaration", span)
+    fn typecheck_destructuring_assignment(mut this, vars: [ParsedVarDecl], parsed_init: ParsedExpression, scope_id: ScopeId, safety_mode: SafetyMode, span: Span) throws -> CheckedStatement {
+
+        let init = .typecheck_expression_and_dereference_if_needed(parsed_init, scope_id, safety_mode, type_hint: None, span: parsed_init.span())
+
+        // buffer the last "added" statement so that we can return it, adding the current `last_statement` to .current_block.
+        mut last_statement: CheckedStatement? = None
+
+        let tuple_var = match init {
+            // keep the variable from the assigned expression, no need to create a new one just to copy.
+            Var(var) => var
+            else => {
+                // since there is no already named value, we have to create one.
+                let temp_name = .fresh_temporary()
+
+                // Since we choose the temporary and we know exactly how it is used, we'll make it mutable.
+                // This makes it eligible for C++ copy elision, since we will only be using it to reference each of the tuple elements.
+                let (var, var_id) = .create_variable(type_id: init.type(), span: init.span(), name: temp_name, is_mutable: true, scope_id)
+
+                last_statement = CheckedStatement::VarDecl(var_id, init, span: init.span())
+                yield var
+            }
         }
 
+
+
         mut inner_types: [TypeId] = []
-        let tuple_type = .get_type(expr_type_id)
+        let tuple_type = .get_type(init.type())
         if tuple_type is GenericInstance(args) {
             inner_types = args
         } else {
-            .error("Tuple Type should be Generic Instance", span)
+            .error("Destructuring assignment only works on tuples", span)
         }
-        let tuple_variable = .program.get_variable(tuple_var_id)
+
+        let tuple_var_access = CheckedExpression::Var(var: tuple_var, span: init.span())
+
         if vars.size() == inner_types.size() {
             for i in 0..vars.size() {
-                mut new_var = vars[i]
-                new_var.parsed_type = ParsedType::Name(name: .type_name(inner_types[i]), span)
-                let init = ParsedExpression::IndexedTuple(
-                    expr: ParsedExpression::Var(name: tuple_variable.name, span)
+                let (var, var_id) = .create_variable(type_id: inner_types[i], span: vars[i].span, name: vars[i].name, is_mutable: vars[i].is_mutable, scope_id)
+
+                let init = CheckedExpression::IndexedTuple(
+                    expr: tuple_var_access
                     index: i
+                    span: vars[i].span
                     is_optional: false
-                    span)
-                var_decls.push(.typecheck_var_decl(var: vars[i], init, scope_id, safety_mode, span))
+                    type_id: inner_types[i]
+                )
+
+                if vars[i].inlay_span is None {
+                    // since the user asked the variable to have a concrete type, we may also want
+                    // to check the type. note that sadly this does not help in inferring the
+                    // correct type, just in reporting to the user when the types don't match.
+                    let inlay_type = .typecheck_typename(parsed_type: vars[i].parsed_type, scope_id, name: None)
+                    if inlay_type != unknown_type_id() {
+                        .check_types_for_compat(
+                            lhs_type_id: inlay_type
+                            rhs_type_id: inner_types[i]
+                            generic_inferences: &mut .generic_inferences
+                            // this span is more helpful than using `init` because in the case
+                            // of multiple type hints we can say which ones have discrepancies.
+                            span: vars[i].parsed_type.span()
+                        )
+                    }
+                }
+
+                if .dump_type_hints {
+                    .dump_type_hint(type_id: inner_types[i], span: vars[i].span)
+                }
+
+                // note that this branch could be removed from the cases where i >= 1 but it is not
+                // worth it since this loop runs a very small amount of times, usually 2.
+                if last_statement is Some(stmt) {
+                    .current_block.add_statement_no_yield(stmt)
+                }
+
+                last_statement = CheckedStatement::VarDecl(var_id, init, span: vars[i].span)
             }
         } else {
             .error("Tuple inner types sould have same size as tuple members", span)
         }
 
-        return CheckedStatement::DestructuringAssignment(vars: var_decls, var_decl: checked_tuple_var_decl, span)
+        // we return garbage in the case where a variable is being destructured (no temporary), and
+        // no destructured bindings are created, presumably because either the tuple size is
+        // incorrect or the variable in question is not a tuple. This case does not have any
+        // interesting control flow that we'd want to not hide, so it's ok to return garbage.
+        return last_statement ?? CheckedStatement::Garbage(span)
     }
 
     fn interpreter(mut this) -> Interpreter => Interpreter::create(

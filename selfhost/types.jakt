@@ -1254,6 +1254,13 @@ struct CheckedBlock {
     control_flow: BlockControlFlow
     yielded_type: TypeId? = None
     yielded_none: bool = false
+
+    // add statement guaranteed to not be a yield statement. Yield statements
+    // need more processing by the typechecker.
+    fn add_statement_no_yield(mut this, anon stmt: CheckedStatement) {
+        .control_flow = .control_flow.updated(stmt.control_flow())
+        .statements.push(stmt)
+    }
 }
 
 struct FieldRecord {
@@ -1364,7 +1371,6 @@ struct CheckedEnumVariantBinding {
 boxed enum CheckedStatement {
     Expression(expr: CheckedExpression, span: Span)
     Defer(statement: CheckedStatement, span: Span)
-    DestructuringAssignment(vars: [CheckedStatement], var_decl: CheckedStatement, span: Span)
     VarDecl(var_id: VarId, init: CheckedExpression, span: Span)
     If(condition: CheckedExpression, then_block: CheckedBlock, else_statement: CheckedStatement?, span: Span)
     Block(block: CheckedBlock, span: Span)

@@ -1052,7 +1052,6 @@ class Interpreter {
     ) throws -> CheckedStatement => match statement {
         Expression(expr, span) => CheckedStatement::Expression(expr: .perform_final_interpretation_expr_pass(expr, scope, function_id), span)
         Defer(statement, span) => CheckedStatement::Defer(statement: .perform_final_interpretation_pass(statement, scope, function_id), span)
-        DestructuringAssignment(vars, var_decl, span) => CheckedStatement::DestructuringAssignment(vars: vars, var_decl: .perform_final_interpretation_pass(statement: var_decl, scope, function_id), span)
         VarDecl(var_id, init, span) => CheckedStatement::VarDecl(var_id, init: .perform_final_interpretation_expr_pass(expr: init, scope, function_id), span)
         If(condition, then_block, else_statement, span) => {
             let new_condition = .perform_final_interpretation_expr_pass(expr: condition, scope, function_id)
@@ -3683,57 +3682,6 @@ class Interpreter {
             }
             Defer(statement) => {
                 scope.defer_statement(statement)
-            }
-            DestructuringAssignment(vars, var_decl) => {
-                guard var_decl is VarDecl(var_id, init) else {
-                    panic("expected vardecl")
-                }
-                match .execute_expression(init, scope) {
-                    Return(value) => {
-                        return StatementResult::Return(value)
-                    }
-                    Throw(value) => {
-                        return StatementResult::Throw(value)
-                    }
-                    JustValue(var_value) => {
-                        scope.bindings[.program.get_variable(id: var_id).name] = var_value
-                    }
-                    Continue => {
-                        return StatementResult::Continue
-                    }
-                    Break => {
-                        return StatementResult::Break
-                    }
-                    Yield => {
-                        panic("Invalid control flow")
-                    }
-                }
-
-                for var in vars {
-                    guard var is VarDecl(var_id, init) else {
-                        panic("expected vardecl")
-                    }
-                    match .execute_expression(init, scope) {
-                        Return(value) => {
-                            return StatementResult::Return(value)
-                        }
-                        Throw(value) => {
-                            return StatementResult::Throw(value)
-                        }
-                        JustValue(var_value) => {
-                            scope.bindings[.program.get_variable(id: var_id).name] = var_value
-                        }
-                        Continue => {
-                            return StatementResult::Continue
-                        }
-                        Break => {
-                            return StatementResult::Break
-                        }
-                        Yield => {
-                            panic("Invalid control flow")
-                        }
-                    }
-                }
             }
             VarDecl(var_id, init, span) => {
                 match .execute_expression(init, scope) {

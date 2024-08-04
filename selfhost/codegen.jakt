@@ -4684,13 +4684,6 @@ struct CodeGenerator {
             Garbage => {
                 panic("Garbage statement in codegen")
             }
-            DestructuringAssignment(vars, var_decl) => {
-                .codegen_statement(statement: var_decl, &mut output)
-
-                for v in vars {
-                    .codegen_statement(statement: v, &mut output)
-                }
-            }
             VarDecl(var_id, init) => {
                 let var = .program.get_variable(var_id)
                 let var_type = .program.get_type(var.type_id)

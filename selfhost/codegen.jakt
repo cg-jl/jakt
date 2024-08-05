@@ -1909,30 +1909,14 @@ struct CodeGenerator {
         output.appendff("{} __jakt_variant_index = 0;\n", index_type, max_index_value)
 
         if not common_fields.is_empty() {
-            // Another maybe-uninitialized data member for the common fields.
-            // NOTE: Could have a record of which fields won't have a default constructor
-            // so this doesn't output a complex union if all the fields have default constructors.
-            output.append("union CommonData {\n")
-
-            // This one has to be the first since C++ will use the first field to zero-init
-            // a union. This way we guarantee that the union can be default initialized.
-            output.append("u8 __jakt_uninit_common;\n")
-
-            output.append("struct {\n")
+            output.append("struct CommonData {\n")
 
             // Make common fields available
             for (field_name, type) in common_fields {
                 output.appendff("{} {};\n", type, field_name)
             }
 
-            output.append("} init_common;\n")
-
-            // See comment below about the constructors of `VariantData`.
-            // Make sure everything's at zero value.
-            output.append("constexpr CommonData() {}\n")
-            output.append("~CommonData() {}\n")
-
-            output.append("} common;\n")
+            output.append("} common;")
         }
 
 
@@ -2056,7 +2040,20 @@ struct CodeGenerator {
         // The only private thing is the default constructor, which is
         // overriden to allow the `static` functions to start with an undefined
         // value and write to it.
-        output.appendff("private:\n{}() {{}};\n", enum_.name)
+        if common_fields.is_empty() {
+            output.appendff("private:{}() {{}}", enum_.name)
+        } else {
+            output.appendff("private:{}({} {}", enum_.name, common_fields[0].1, common_fields[0].0)
+            for (name, field_type) in common_fields[1..] {
+                output.appendff(",{} {}", field_type, name)
+            }
+            output.appendff(") : common(move({})", common_fields[0].0)
+            for field in common_fields[1..] {
+                let name = field.0
+                output.appendff(", move({})", name)
+            }
+            output.append(") {}")
+        }
 
         output.append("};\n")
 
@@ -2150,7 +2147,22 @@ struct CodeGenerator {
         use_move: bool // whether to use the `move()` function from AK lib.
     ) -> String {
         mut builder = StringBuilder::create()
+        if not enum_.fields.is_empty() and is_constructor {
+            let arg: StringView = match use_move {
+                true => "move(rhs.common)",
+                false => "rhs.common"
+            }
+            builder.appendff(": common({})", arg)
+        }
         builder.append("{")
+
+        if not enum_.fields.is_empty() and not is_constructor {
+            let arg: StringView = match use_move {
+                true => "move(rhs.common)",
+                false => "rhs.common"
+            }
+            builder.appendff("this->common = {};", arg)
+        }
 
         if is_constructor {
             // The assigned value must be initialized.
@@ -2178,22 +2190,6 @@ struct CodeGenerator {
                 accessor, rhs)
         }
 
-        // @cleanup just make init common a parameter?
-        if is_constructor {
-            for common in enum_.fields {
-                let variable = .program.get_variable(common.variable_id)
-                let name = variable.name_for_codegen().as_name_for_use()
-
-                builder.append(placement_new(format("common.init_common.{}", name)))
-            }
-        } else {
-            for common in enum_.fields {
-                let variable = .program.get_variable(common.variable_id)
-                let name = variable.name_for_codegen().as_name_for_use()
-
-                builder.append(assign(format("common.init_common.{}", name)))
-            }
-        }
 
 
         if is_constructor {
@@ -2247,14 +2243,31 @@ struct CodeGenerator {
             false => enum_.name
         }
 
-            // NOTE: these statements should compile because a default constructor is provided privately.
+        let call_ctor_in_declare_uninit = match common_fields.is_empty() {
+            // the default constructor has no arguments
+            true => ""
+            // add arguments for the common fields
+            false => {
+                mut builder = StringBuilder::create()
+
+                builder.appendff("(move({})", common_fields[0].0)
+                for field in common_fields[1..] {
+                    let name = field.0
+                    builder.appendff(",move({})", name)
+                }
+                builder.append(")")
+
+                yield builder.to_string()
+            }
+        }
+
         let (declare_uninit, deref_uninit) = match enum_.is_boxed {
             true => (
-                format("NonnullRefPtr<{0}> __jakt_uninit_enum = adopt_ref(*new {0});\n", ctor_type),
+                format("NonnullRefPtr<{0}> __jakt_uninit_enum = adopt_ref(*new {0}{1});\n", ctor_type, call_ctor_in_declare_uninit),
                 "__jakt_uninit_enum->"
             )
             false => (
-                format("{} __jakt_uninit_enum;\n", enum_.name),
+                format("{} __jakt_uninit_enum{};\n", enum_.name, call_ctor_in_declare_uninit),
                 "__jakt_uninit_enum."
             )
         }
@@ -2289,14 +2302,6 @@ struct CodeGenerator {
 
             // +1 because 0 is the uninitialized tag
             output .appendff("{}__jakt_variant_index = {};\n", deref_uninit, variant_index + 1)
-
-            for field in common_fields {
-                let name = field.0
-                output .append(placement_new(
-                    target: format("{}common.init_common.{}", deref_uninit, name)
-                    name
-                ))
-            }
 
             for field in variant_fields {
                 let name = field.0
@@ -2347,9 +2352,7 @@ struct CodeGenerator {
         } else {
             output.appendff("{0}::{0}({0} &&rhs)", enum_.name)
         }
-        output.append("{\n")
         output.append(.codegen_enum_assignment_body(enum_, is_constructor: true, use_move: true))
-        output.append("}\n")
     }
 
     fn codegen_enum_field_lists(mut this, anon enum_: CheckedEnum) throws -> ( [(String, String)], [(String, [(String, String)])]) {
@@ -2479,16 +2482,6 @@ struct CodeGenerator {
     ) {
         output.append("{ if (this->__jakt_variant_index == 0) return;\n")
 
-        let common_field_count = enum_.fields.size()
-
-        for common_field in enum_.fields {
-            let variable = .program.get_variable(common_field.variable_id)
-            let ds: String? = .destructor_name(variable.type_id)
-            if ds is Some(name) {
-                output.appendff("this->common.init_common.{}.~{}();\n", variable.name_for_codegen().as_name_for_use(), name)
-            }
-        }
-
         output.append("this->__jakt_destroy_variant(); }\n")
     }
 
@@ -2595,7 +2588,7 @@ struct CodeGenerator {
                             output.append(", ")
                         }
                         if i < common_field_count {
-                            output.appendff("\", this->common.init_common.{});\n", var.name_for_codegen().as_name_for_use())
+                            output.appendff("\", this->common.{});\n", var.name_for_codegen().as_name_for_use())
                         } else {
                             output.appendff("\", that.{});\n", var.name_for_codegen().as_name_for_use())
                         }
@@ -2867,9 +2860,9 @@ struct CodeGenerator {
                     Enum(id) | GenericEnumInstance(id) => {
                         let structure = .program.get_enum(id)
                         if structure.record_type is SumEnum(is_boxed) and is_boxed and object != "*this" {
-                            output.append("->common.init_common.")
+                            output.append("->common.")
                         } else {
-                            output.append(".common.init_common.")
+                            output.append(".common.")
                         }
                     }
                     else => {
@@ -3121,7 +3114,7 @@ struct CodeGenerator {
                 for field in enum_.fields {
                     let var_name = .program.get_variable(field.variable_id).name_for_codegen().as_name_for_use()
                     if var_name == field_name {
-                        section = "common.init_common"
+                        section = "common"
                         is_common_field = true
                         break
                     }
@@ -3570,7 +3563,7 @@ struct CodeGenerator {
                             }
 
                             if is_common_member {
-                                output.append(" = __jakt_enum_value.common.init_common.")
+                                output.append(" = __jakt_enum_value.common.")
                                 output.append(arg.name!)
                             } else {
                                 output.append(" = __jakt_match_value.")
@@ -3763,7 +3756,7 @@ struct CodeGenerator {
                                         }
 
                                         if is_common_member {
-                                            output.append(" = __jakt_match_variant.common.init_common.")
+                                            output.append(" = __jakt_match_variant.common.")
                                             output.append(accessor)
                                         } else {
                                             output.append(" = __jakt_match_value.")

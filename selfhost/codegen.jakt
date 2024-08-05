@@ -1936,31 +1936,41 @@ struct CodeGenerator {
         }
 
 
-        output.append("union VariantData {\n")
-
-        // We need to have some way to initialize the union if any of the other fields is non default constructible.
-        output.append("u8 __jakt_uninit_value;\n")
-
+        mut has_variant_data = false
         for variant_index in 0..enum_.variants.size() {
-            let variant = enum_.variants[variant_index]
-            let fields: [(String, String)] = variant_field_list[variant_index].1
-
-            if not fields.is_empty() {
-                output.append("struct {\n")
-                for (field_name, field_type) in fields.iterator() {
-                    output.appendff("{} {};\n", field_type, field_name)
-                }
-                output.appendff("}} {};\n", variant.name())
+            if not variant_field_list[variant_index].1.is_empty() {
+                has_variant_data = true
+                break
             }
         }
 
-        output.append("constexpr VariantData() {}\n")
-        // make the union's destructor do nothing so C++ can shut up about the union
-        // not having a default destructor. The safe destructor is the outer
-        // struct's destructor, which has access to the variant index.
-        output.append("~VariantData() {}\n")
+        if has_variant_data {
+            output.append("union VariantData {\n")
 
-        output.append("} as;\n")
+            // We need to have some way to initialize the union if any of the other fields is non default constructible.
+            output.append("u8 __jakt_uninit_value;\n")
+
+            for variant_index in 0..enum_.variants.size() {
+                let variant = enum_.variants[variant_index]
+                let fields: [(String, String)] = variant_field_list[variant_index].1
+
+                if not fields.is_empty() {
+                    output.append("struct {\n")
+                    for (field_name, field_type) in fields.iterator() {
+                        output.appendff("{} {};\n", field_type, field_name)
+                    }
+                    output.appendff("}} {};\n", variant.name())
+                }
+            }
+
+            output.append("constexpr VariantData() {}\n")
+            // make the union's destructor do nothing so C++ can shut up about the union
+            // not having a default destructor. The safe destructor is the outer
+            // struct's destructor, which has access to the variant index.
+            output.append("~VariantData() {}\n")
+
+            output.append("} as;\n")
+        }
         output.appendff("constexpr {} __jakt_init_index() const noexcept {{ return __jakt_variant_index - 1; }}", index_type)
 
 
@@ -2168,6 +2178,7 @@ struct CodeGenerator {
                 accessor, rhs)
         }
 
+        // @cleanup just make init common a parameter?
         if is_constructor {
             for common in enum_.fields {
                 let variable = .program.get_variable(common.variable_id)

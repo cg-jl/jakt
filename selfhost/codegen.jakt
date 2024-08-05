@@ -1318,8 +1318,17 @@ struct CodeGenerator {
             if enum_.underlying_type_id == void_type_id() {
                 .codegen_enum_debug_description_getter(enum_, output: &mut inside_namespace)
                 let (common_fields, variant_field_list) = .codegen_enum_field_lists(enum_)
+                mut has_variant_data = false
+                for (_, list) in variant_field_list {
+                    if not list.is_empty() {
+                        has_variant_data = true
+                        break
+                    }
+                }
+
                 .codegen_enum_constructors(
                     enum_
+                    has_variant_data
                     is_inside_struct: false
                     generic_parameter_list: None
                     variant_field_list
@@ -1327,11 +1336,14 @@ struct CodeGenerator {
                     output: &mut inside_namespace
                 )
 
-                .codegen_enum_destructor(enum_, is_inline: false, output: &mut inside_namespace)
 
-                inside_namespace.appendff("void {0}::__jakt_destroy_variant() {{\n", enum_.name)
-                .codegen_enum_destroy_variant(enum_, output: &mut inside_namespace)
-                inside_namespace.append("}\n")
+                if has_variant_data {
+                    .codegen_enum_destructor(enum_, is_inline: false, output: &mut inside_namespace)
+
+                    inside_namespace.appendff("void {0}::__jakt_destroy_variant() {{\n", enum_.name)
+                    .codegen_enum_destroy_variant(enum_, output: &mut inside_namespace)
+                    inside_namespace.append("}\n")
+                }
             }
 
             let scope = .program.get_scope(enum_.scope_id)
@@ -1962,6 +1974,7 @@ struct CodeGenerator {
 
             .codegen_enum_constructors(
                 enum_
+                has_variant_data
                 is_inside_struct: true
                 generic_parameter_list
                 variant_field_list
@@ -1971,9 +1984,11 @@ struct CodeGenerator {
 
             .codegen_enum_destructor(enum_, is_inline: true, &mut output)
 
-            output.append("private: void __jakt_destroy_variant() {\n")
-            .codegen_enum_destroy_variant(enum_, &mut output)
-            output.append("}\n")
+            if has_variant_data {
+                output.append("private: void __jakt_destroy_variant() {\n")
+                .codegen_enum_destroy_variant(enum_, &mut output)
+                output.append("}\n")
+            }
             output.append("public:\n")
 
         } else {
@@ -1995,12 +2010,16 @@ struct CodeGenerator {
 
             // Forward declare destructor, move assignment and copy assignment
             // operators/constructors.
-            output.appendff("~{}();\n", enum_.name)
+            if has_variant_data {
+                output.appendff("~{}();\n", enum_.name)
+            }
             output.appendff("{0}& operator=({0} const &);\n", enum_.name)
             output.appendff("{0}& operator=({0} &&);\n", enum_.name)
             output.appendff("{0}({0} const&);\n", enum_.name)
             output.appendff("{0}({0} &&);\n", enum_.name)
-            output.append("private: void __jakt_destroy_variant();\n")
+            if has_variant_data {
+                output.append("private: void __jakt_destroy_variant();\n")
+            }
             output.append("public:\n")
         }
 
@@ -2146,6 +2165,7 @@ struct CodeGenerator {
     fn codegen_enum_assignment_body(
         this
         enum_: CheckedEnum
+        has_variant_data: bool
         is_constructor: bool // whether it's a constructor. If false, it's an assignment operator.
         use_move: bool // whether to use the `move()` function from AK lib.
     ) -> String {
@@ -2198,19 +2218,22 @@ struct CodeGenerator {
             // assignment operator since it's already initialized to the correct
             // type.
 
-            builder.append("if (this->__jakt_tag != rhs.__jakt_tag) {\n")
-            builder.append("this->__jakt_destroy_variant();\n")
+            if has_variant_data {
+                builder.append("if (this->__jakt_tag != rhs.__jakt_tag) {")
+                builder.append("this->__jakt_destroy_variant();")
+                .codegen_for_enum_variants(&enum_, &placement_new, index_expr: "rhs.__jakt_tag", &mut builder)
+                builder.append("} else {")
+            }
 
-            .codegen_for_enum_variants(&enum_, &placement_new, index_expr: "rhs.__jakt_tag", &mut builder)
-
-            builder.append("} else {\n")
 
             // Here we can use assignment for all of the fields, since we know for sure
             // they have been initialized.
 
             .codegen_for_enum_variants(&enum_, &assign, index_expr: "rhs.__jakt_tag", &mut builder)
 
-            builder.append("}\n")
+            if has_variant_data {
+                builder.append("}")
+            }
         }
 
         builder.append("this->__jakt_tag = rhs.__jakt_tag;\n")
@@ -2222,6 +2245,7 @@ struct CodeGenerator {
     fn codegen_enum_constructors(
         this
         enum_: CheckedEnum
+        has_variant_data: bool
         is_inside_struct: bool
         generic_parameter_list: String? // Must be Some if enum is generic.
         variant_field_list: [(String, [(String, String)])] // variant_name, [(field_name, .codegen_type(field_type)]
@@ -2249,14 +2273,6 @@ struct CodeGenerator {
                 }
 
                 yield builder.to_string()
-            }
-        }
-
-        mut has_variant_data = false
-        for (_, list) in variant_field_list {
-            if not list.is_empty() {
-                has_variant_data = true
-                break
             }
         }
 
@@ -2323,7 +2339,7 @@ struct CodeGenerator {
             output.appendff("{0}& {0}::operator=({0} const &rhs)", enum_.name)
         }
         output.append("{\n")
-        output.append(.codegen_enum_assignment_body(enum_,is_constructor: false use_move: false))
+        output.append(.codegen_enum_assignment_body(enum_, has_variant_data, is_constructor: false use_move: false))
         output.append("return *this;\n")
         output.append("}\n")
 
@@ -2333,7 +2349,7 @@ struct CodeGenerator {
         } else {
             output.appendff("{0}::{0}({0} const &rhs)", enum_.name)
         }
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: true, use_move: false))
+        output.append(.codegen_enum_assignment_body(enum_, has_variant_data, is_constructor: true, use_move: false))
 
         // Move assignment operator
         if is_inside_struct {
@@ -2342,7 +2358,7 @@ struct CodeGenerator {
             output.appendff("{0}& {0}::operator=({0} &&rhs)", enum_.name)
         }
         output.append("{\n")
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: false, use_move: true))
+        output.append(.codegen_enum_assignment_body(enum_, has_variant_data, is_constructor: false, use_move: true))
         output.append("return *this;\n")
         output.append("}\n")
 
@@ -2352,7 +2368,7 @@ struct CodeGenerator {
         } else {
             output.appendff("{0}::{0}({0} &&rhs)", enum_.name)
         }
-        output.append(.codegen_enum_assignment_body(enum_, is_constructor: true, use_move: true))
+        output.append(.codegen_enum_assignment_body(enum_, has_variant_data, is_constructor: true, use_move: true))
     }
 
     fn codegen_enum_field_lists(mut this, anon enum_: CheckedEnum) throws -> ( [(String, String)], [(String, [(String, String)])]) {

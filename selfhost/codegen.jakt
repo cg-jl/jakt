@@ -679,10 +679,6 @@ struct CodeGenerator {
     // deferred output appended to `gen`'s output.
     fn capturing_modules(mut this, module: Module, anon gen: &fn(anon cg: &mut CodeGenerator, module: Module, output: &mut StringBuilder) throws -> void, output: &mut StringBuilder) throws -> {ModuleId} {
         .used_modules = {}
-        .used_modules.ensure_capacity(module.imports.size())
-        for id in module.imports {
-            .used_modules.add(id)
-        }
         .deferred_output.clear()
         gen(&mut this, module, &mut output)
         output.append(.deferred_output.to_string())
